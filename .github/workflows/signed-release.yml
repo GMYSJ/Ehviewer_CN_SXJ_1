@@ -26,7 +26,10 @@ jobs:
       - name: Build unsigned release
         run: |
           chmod +x ./gradlew
-          ./gradlew app:assembleRelease -x lint -x lintVitalRelease
+          ./gradlew app:assembleRelease \
+            -x lintVitalAnalyzeAppReleaseRelease \
+            -x lintVitalAppReleaseRelease \
+            -x lintVitalReportAppReleaseRelease
 
       - name: Zipalign and sign
         run: |
