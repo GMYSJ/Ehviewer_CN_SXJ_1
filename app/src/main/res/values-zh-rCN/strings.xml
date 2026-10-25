@@ -482,6 +482,11 @@
     <string name="page_menu_share">@string/share</string>
     <string name="page_menu_save">保存</string>
     <string name="page_menu_save_to">保存到 …</string>
+    <string name="page_menu_save_origin">保存原图</string>
+    <string name="save_origin_saving">正在获取原图…</string>
+    <string name="save_origin_failed">原图获取失败（可能配额不足或原图不可用）</string>
+    <string name="save_origin_no_origin">本页没有原图（已是原始尺寸）</string>
+    <string name="save_origin_not_ready">本页信息未就绪，请先翻到该页</string>
     <string name="page_menu_add_bookmark">添加书签</string>
     <string name="gallery_menu_title">菜单</string>
     <string name="share_image">分享图片</string>

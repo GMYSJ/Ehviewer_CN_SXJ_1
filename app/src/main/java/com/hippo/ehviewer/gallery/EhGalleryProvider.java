@@ -19,6 +19,8 @@ package com.hippo.ehviewer.gallery;
 import android.content.Context;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import com.hippo.ehviewer.GetText;
+import com.hippo.ehviewer.R;
 import com.hippo.ehviewer.client.data.GalleryInfo;
 import com.hippo.ehviewer.spider.SpiderQueen;
 import com.hippo.lib.glgallery.GalleryProvider;
@@ -92,6 +94,20 @@ public class EhGalleryProvider extends GalleryProvider2 implements SpiderQueen.O
         } else {
             return null;
         }
+    }
+
+    /**
+     * 单独保存某一页的原图，返回的 {@code error} 非空表示失败。
+     */
+    @NonNull
+    public SpiderQueen.OriginSaveResult saveOrigin(int index, @NonNull UniFile dir, @NonNull String filename) {
+        SpiderQueen spiderQueen = mSpiderQueen;
+        if (spiderQueen != null) {
+            return spiderQueen.saveOrigin(index, dir, filename);
+        }
+        SpiderQueen.OriginSaveResult result = new SpiderQueen.OriginSaveResult();
+        result.error = GetText.getString(R.string.save_origin_not_ready);
+        return result;
     }
 
     @Override

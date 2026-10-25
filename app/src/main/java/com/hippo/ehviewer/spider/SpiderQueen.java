@@ -737,6 +737,157 @@ public final class SpiderQueen implements Runnable {
         }
     }
 
+    /**
+     * 单独保存某一页的原图，与 {@link Settings#getDownloadOriginImage()} 无关，也不会写进阅读缓存。
+     * <p>
+     * 站点上原图不是压缩图的一个参数，而是独立端点：图片页 HTML 里的
+     * {@code <a href="...fullimg.php?gid=..&page=..&key=..">} 才是原图。需要先请求它拿到 302 的
+     * {@code Location}（H@H 的 {@code /om/...}），再请求该地址取字节。
+     */
+    @NonNull
+    public OriginSaveResult saveOrigin(int index, @NonNull UniFile dir, @NonNull String filename) {
+        OriginSaveResult result = new OriginSaveResult();
+
+        SpiderInfo spiderInfo = mSpiderInfo.get();
+        if (spiderInfo == null) {
+            result.error = GetText.getString(R.string.save_origin_not_ready);
+            return result;
+        }
+
+        String pToken;
+        synchronized (mPTokenLock) {
+            pToken = spiderInfo.pTokenMap.get(index);
+        }
+        if (TextUtils.isEmpty(pToken) || SpiderInfo.TOKEN_FAILED.equals(pToken)) {
+            pToken = getPTokenFromInternet(index);
+        }
+        if (TextUtils.isEmpty(pToken)) {
+            result.error = GetText.getString(R.string.save_origin_not_ready);
+            return result;
+        }
+
+        String pageUrl = EhUrl.getPageUrl(mGalleryInfo.gid, index, pToken);
+        String originImageUrl;
+        String skipHathKey;
+        try {
+            GalleryPageParser.Result pageResult = EhEngine.getGalleryPage(null, mHttpClient, pageUrl,
+                    mGalleryInfo.gid, mGalleryInfo.token);
+            originImageUrl = pageResult.originImageUrl;
+            skipHathKey = pageResult.skipHathKey;
+        } catch (Throwable e) {
+            ExceptionUtils.throwIfFatal(e);
+            Log.e(TAG, "Failed to get page for origin image, page = " + (index + 1), e);
+            result.error = GetText.getString(R.string.save_origin_failed);
+            return result;
+        }
+
+        if (TextUtils.isEmpty(originImageUrl)) {
+            // 这一页在站点上没有 “Download original” 链接，说明它本身就是原始尺寸
+            result.error = GetText.getString(R.string.save_origin_no_origin);
+            return result;
+        }
+
+        String url = originImageUrl;
+        if (!TextUtils.isEmpty(skipHathKey)) {
+            url += url.contains("?") ? "&nl=" + skipHathKey : "?nl=" + skipHathKey;
+        }
+
+        Response response = null;
+        InputStream is = null;
+        OutputStream os = null;
+        try {
+            // 图片客户端关闭了自动重定向，所以第一次请求只用来取 Location
+            response = mHttpImageClient.newCall(new EhRequestBuilder(url, pageUrl).build()).execute();
+            String location = response.header("Location");
+            response.close();
+            response = null;
+
+            if (TextUtils.isEmpty(location)) {
+                // 没有跳转通常是配额/权限问题（原站直接回了错误页）
+                result.error = GetText.getString(R.string.save_origin_failed);
+                return result;
+            }
+
+            response = mHttpImageClient.newCall(new EhRequestBuilder(location, pageUrl).build()).execute();
+            ResponseBody body = response.body();
+            if (!response.isSuccessful() || body == null) {
+                result.error = GetText.getString(R.string.save_origin_failed);
+                return result;
+            }
+
+            BufferedInputStream bis = new BufferedInputStream(body.byteStream(), 8192);
+            is = bis;
+            // 嗅探真实格式，原图可能是 png/gif，不能假设是 jpg
+            bis.mark(32);
+            byte[] header = new byte[16];
+            int length = bis.read(header);
+            bis.reset();
+            String extension = sniffImageExtension(header, length);
+
+            UniFile file = dir.createFile(filename + extension);
+            if (file == null) {
+                result.error = GetText.getString(R.string.error_cant_save_image);
+                return result;
+            }
+            os = file.openOutputStream();
+            if (os == null) {
+                result.error = GetText.getString(R.string.error_cant_save_image);
+                return result;
+            }
+            IOUtils.copy(bis, os);
+            os.flush();
+
+            result.file = file;
+            return result;
+        } catch (Throwable e) {
+            ExceptionUtils.throwIfFatal(e);
+            Log.e(TAG, "Failed to save origin image, page = " + (index + 1), e);
+            result.error = GetText.getString(R.string.save_origin_failed);
+            return result;
+        } finally {
+            IOUtils.closeQuietly(is);
+            IOUtils.closeQuietly(os);
+            if (response != null) {
+                response.close();
+            }
+        }
+    }
+
+    private static String sniffImageExtension(byte[] header, int length) {
+        if (length >= 3) {
+            int b0 = header[0] & 0xff;
+            int b1 = header[1] & 0xff;
+            int b2 = header[2] & 0xff;
+            if (b0 == 0xff && b1 == 0xd8) {
+                return ".jpg";
+            }
+            if (b0 == 0x89 && b1 == 0x50 && b2 == 0x4e) {
+                return ".png";
+            }
+            if (b0 == 'G' && b1 == 'I' && b2 == 'F') {
+                return ".gif";
+            }
+            if (length >= 12 && b0 == 'R' && b1 == 'I' && b2 == 'F'
+                    && header[8] == 'W' && header[9] == 'E' && header[10] == 'B' && header[11] == 'P') {
+                return ".webp";
+            }
+        }
+        return ".jpg";
+    }
+
+    public static final class OriginSaveResult {
+
+        @Nullable
+        public UniFile file;
+
+        @Nullable
+        public String error;
+
+        public boolean isSuccess() {
+            return file != null;
+        }
+    }
+
     @Nullable
     public String getExtension(int index) {
         int state = getPageState(index);

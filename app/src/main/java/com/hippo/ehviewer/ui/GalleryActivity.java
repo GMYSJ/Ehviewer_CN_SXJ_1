@@ -76,6 +76,7 @@ import com.hippo.ehviewer.gallery.ArchiveGalleryProvider;
 import com.hippo.ehviewer.gallery.DirGalleryProvider;
 import com.hippo.ehviewer.gallery.EhGalleryProvider;
 import com.hippo.ehviewer.gallery.GalleryProvider2;
+import com.hippo.ehviewer.spider.SpiderQueen;
 import com.hippo.ehviewer.widget.GalleryGuideView;
 import com.hippo.ehviewer.widget.GalleryHeader;
 import com.hippo.ehviewer.widget.ReversibleSeekBar;
@@ -1091,6 +1092,42 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         }
     }
 
+    private void saveOriginImage(final int page) {
+        if (null == mGalleryProvider) {
+            return;
+        }
+        final File dir = AppConfig.getExternalImageDir();
+        if (null == dir) {
+            Toast.makeText(this, R.string.error_cant_save_image, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!(mGalleryProvider instanceof EhGalleryProvider)) {
+            Toast.makeText(this, R.string.save_origin_no_origin, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        final EhGalleryProvider provider = (EhGalleryProvider) mGalleryProvider;
+        final String filename = provider.getImageFilename(page);
+        Toast.makeText(this, R.string.save_origin_saving, Toast.LENGTH_SHORT).show();
+
+        new Thread(() -> {
+            final SpiderQueen.OriginSaveResult originResult =
+                    provider.saveOrigin(page, UniFile.fromFile(dir), filename);
+            runOnUiThread(() -> {
+                if (originResult.isSuccess() && originResult.file != null) {
+                    Toast.makeText(GalleryActivity.this,
+                            getString(R.string.image_saved, originResult.file.getUri()),
+                            Toast.LENGTH_SHORT).show();
+                    sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, originResult.file.getUri()));
+                } else {
+                    Toast.makeText(GalleryActivity.this,
+                            originResult.error != null ? originResult.error : getString(R.string.save_origin_failed),
+                            Toast.LENGTH_LONG).show();
+                }
+            });
+        }, "SaveOriginImage").start();
+    }
+
     private void saveImageDats(ActivityResult result) {
         if (result == null) {
             return;
@@ -1137,7 +1174,9 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         builder.setTitle(resources.getString(R.string.page_menu_title, page + 1));
 
         final CharSequence[] items;
-        items = new CharSequence[]{getString(R.string.page_menu_refresh), getString(R.string.page_menu_share), getString(R.string.page_menu_save), getString(R.string.page_menu_save_to)};
+        items = new CharSequence[]{getString(R.string.page_menu_refresh), getString(R.string.page_menu_share),
+                getString(R.string.page_menu_save), getString(R.string.page_menu_save_to),
+                getString(R.string.page_menu_save_origin)};
         pageDialogListener(builder, items, page);
         builder.show();
     }
@@ -1161,6 +1200,9 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                     break;
                 case 3: // Save to
                     saveImageTo(page);
+                    break;
+                case 4: // Save original image
+                    saveOriginImage(page);
                     break;
             }
         });

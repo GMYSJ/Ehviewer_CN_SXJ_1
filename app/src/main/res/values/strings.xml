@@ -573,6 +573,11 @@
     <string name="page_menu_share">@string/share</string>
     <string name="page_menu_save">Save</string>
     <string name="page_menu_save_to">Save to …</string>
+    <string name="page_menu_save_origin">Save original</string>
+    <string name="save_origin_saving">Fetching original image…</string>
+    <string name="save_origin_failed">Failed to fetch the original image (quota or not available)</string>
+    <string name="save_origin_no_origin">No original image for this page (already full size)</string>
+    <string name="save_origin_not_ready">Page info not ready yet</string>
     <string name="page_menu_add_bookmark">Add a bookmark</string>
     <string name="gallery_menu_title">Menu</string>
     <string name="share_image">Share image</string>
