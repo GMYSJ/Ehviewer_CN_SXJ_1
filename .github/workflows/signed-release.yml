@@ -1,0 +1,57 @@
+name: Build signed release
+
+# 用仓库里的 test.key 签名 release 包（包名 com.xjs.ehviewer，无 .debug1 后缀），
+# 这样今后自己发的每个版本之间可以互相覆盖安装。
+on:
+  workflow_dispatch:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 21
+
+      - name: Build unsigned release
+        run: |
+          chmod +x ./gradlew
+          ./gradlew app:assembleRelease -x lint -x lintVitalRelease
+
+      - name: Zipalign and sign
+        run: |
+          set -e
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          echo "build-tools: $BT"
+          APK=$(find app/build/outputs/apk -path '*release*' -name '*.apk' | head -1)
+          echo "unsigned apk: $APK"
+          "$BT/zipalign" -p -f 4 "$APK" aligned.apk
+          "$BT/apksigner" sign \
+            --ks test.key --ks-pass pass:123456 --ks-key-alias 1234 --key-pass pass:123456 \
+            --v1-signing-enabled true --v2-signing-enabled true \
+            --out EhViewer-signed.apk aligned.apk
+          "$BT/apksigner" verify --print-certs EhViewer-signed.apk | tee certs.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-apk
+          path: |
+            EhViewer-signed.apk
+            certs.txt
+
+      - name: Publish release on tag
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: EhViewer-signed.apk
