@@ -78,6 +78,7 @@ import com.hippo.lib.yorozuya.SimpleHandler;
 import org.conscrypt.Conscrypt;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.security.KeyStore;
 import java.security.Security;
 import java.util.ArrayList;
@@ -170,6 +171,7 @@ public class EhApplication extends RecordingApplication {
         });
 
         super.onCreate();
+        checkLastCrash();
 //        if(BuildConfig.DEBUG){
 //            TooLargeTool.startLogging(this);
 //        }
@@ -774,6 +776,38 @@ public class EhApplication extends RecordingApplication {
     @Nullable
     public EhNewsDetail getEhNewsDetail(){
         return ehNewsDetail;
+    }
+
+    /**
+     * 上次崩溃的日志如果还在，就复制到剪贴板并提示用户。
+     *
+     * <p>崩溃瞬间进程可能立刻被杀，来不及写剪贴板，这里做第二道保险：
+     * 崩溃时先落盘固定文件，下次启动再取出来。读完即删，避免反复打扰。
+     */
+    private void checkLastCrash() {
+        try {
+            File file = new File(getFilesDir(), "crash/crash-last.log");
+            if (!file.isFile() || file.length() < 16) {
+                return;
+            }
+            byte[] data = new byte[(int) Math.min(file.length(), 8000L)];
+            FileInputStream in = new FileInputStream(file);
+            int read = in.read(data);
+            in.close();
+            file.delete();
+            if (read <= 0) {
+                return;
+            }
+            String content = new String(data, 0, read, "UTF-8");
+            android.content.ClipboardManager cm =
+                    (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("crash", content));
+            }
+            android.widget.Toast.makeText(this, "上次崩溃日志已复制到剪贴板，长按粘贴发给开发者",
+                    android.widget.Toast.LENGTH_LONG).show();
+        } catch (Throwable ignored) {
+        }
     }
 
     public static ExecutorService getExecutorService(@NonNull Context context){
