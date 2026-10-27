@@ -29,6 +29,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
+import android.util.Log;
 import android.util.Pair;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -163,6 +164,8 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
     @Retention(RetentionPolicy.SOURCE)
     private @interface State {
     }
+
+    private static final String TAG = "GalleryDetailScene";
 
     private static final int REQUEST_CODE_COMMENT_GALLERY = 0;
 
@@ -1427,6 +1430,20 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
     }
 
     private void inflateSiteRow(ViewGroup belowHeader) {
+        // 站外入口是附加功能，任何意外都不能影响详情页本身
+        try {
+            inflateSiteRowInner(belowHeader);
+        } catch (Throwable e) {
+            Log.e(TAG, "Failed to inflate site row", e);
+            mSiteRow = null;
+            mSiteHint = null;
+            mSiteKemono = null;
+            mSitePawchive = null;
+            mSiteDownload = null;
+        }
+    }
+
+    private void inflateSiteRowInner(ViewGroup belowHeader) {
         LayoutInflater inflater = LayoutInflater.from(belowHeader.getContext());
         View row = inflater.inflate(R.layout.gallery_detail_site_row, belowHeader, false);
         mSiteRow = row;
@@ -1453,6 +1470,17 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
      * 根据关键词决定要不要显示站外入口，并在首次拿到关键词时异步探测。
      */
     private void updateSiteRow() {
+        try {
+            updateSiteRowInner();
+        } catch (Throwable e) {
+            Log.e(TAG, "Failed to update site row", e);
+            if (null != mSiteRow) {
+                mSiteRow.setVisibility(View.GONE);
+            }
+        }
+    }
+
+    private void updateSiteRowInner() {
         if (null == mSiteRow) {
             return;
         }
@@ -1508,6 +1536,14 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
     }
 
     private void renderSiteResult() {
+        try {
+            renderSiteResultInner();
+        } catch (Throwable e) {
+            Log.e(TAG, "Failed to render site result", e);
+        }
+    }
+
+    private void renderSiteResultInner() {
         if (null == mSiteHint) {
             return;
         }

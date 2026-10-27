@@ -54,6 +54,19 @@ android {
         checkReleaseBuilds true
     }
 
+    // debug 默认用 CI 机器上自动生成的 ~/.android/debug.keystore，每次构建都不同，
+    // 导致新包无法覆盖安装。这里统一改用仓库内的 test.key（与 signed-release.yml 同一个），
+    // 保证所有 debug 包签名一致，可以直接覆盖升级。
+    signingConfigs {
+        debug {
+            storeFile rootProject.file('test.key')
+            storePassword '123456'
+            keyAlias '1234'
+            keyPassword '123456'
+            storeType 'pkcs12'
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
@@ -63,6 +76,7 @@ android {
         debug {
             applicationIdSuffix ".debug1"
             buildConfigField 'String', 'FILE_PROVIDER_AUTHORITY', '"com.hippo.ehviewer.debug.fileprovider"'
+            signingConfig signingConfigs.debug
         }
     }
 
