@@ -199,6 +199,45 @@ public final class Crash {
     }
   }
 
+  /**
+   * 把崩溃栈直接放进剪贴板。
+   *
+   * <p>闪退后用户未必会去翻文件管理器，但“长按粘贴”几乎人人都会。
+   * 剪贴板写入不需要任何权限，这里作为最容易拿到日志的通道。
+   */
+  private static void copyToClipboard(Context context, String content) {
+    try {
+      Object service = context.getSystemService(Context.CLIPBOARD_SERVICE);
+      if (!(service instanceof android.content.ClipboardManager)) {
+        return;
+      }
+      String text = content.length() > 8000 ? content.substring(0, 8000) : content;
+      ((android.content.ClipboardManager) service)
+          .setPrimaryClip(android.content.ClipData.newPlainText("crash", text));
+    } catch (Throwable ignored) {
+      // 剪贴板失败不影响其他落盘路径
+    }
+  }
+
+  /**
+   * 用固定文件名在内部存储留一份，供下次启动时读出并提醒用户。
+   * 内部存储一定能写，不需要任何权限。
+   */
+  private static void saveLastCrash(Context context, String content) {
+    try {
+      File dir = new File(context.getFilesDir(), "crash");
+      if (!dir.isDirectory() && !dir.mkdirs()) {
+        return;
+      }
+      File file = new File(dir, "crash-last.log");
+      FileWriter fw = new FileWriter(file);
+      fw.write(content);
+      fw.flush();
+      fw.close();
+    } catch (Throwable ignored) {
+    }
+  }
+
   public static void saveCrashLog(Context context, Throwable t) {
     String nowString = ReadableTime.getFilenamableTime(System.currentTimeMillis());
     String fileName = "crash-" + nowString + ".log";
@@ -219,6 +258,8 @@ public final class Crash {
       return;
     }
     saveToDownloads(context, fileName, full);
+    saveLastCrash(context, full);
+    copyToClipboard(context, full);
 
     for (File dir : candidateDirs(context)) {
       if (!ensureDir(dir)) {
