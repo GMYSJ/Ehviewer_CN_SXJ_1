@@ -31,9 +31,19 @@ import com.hippo.lib.yorozuya.FileUtils;
 import com.hippo.lib.yorozuya.IOUtils;
 import com.hippo.lib.yorozuya.OSUtils;
 import java.io.File;
+import android.content.ContentResolver;
+import android.content.ContentValues;
+import android.net.Uri;
+import android.os.Environment;
+import android.provider.MediaStore;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.io.Writer;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class Crash {
   private Crash() {}
@@ -44,7 +54,7 @@ public final class Crash {
   }
 
   @SuppressLint("HardwareIds")
-  private static void collectInfo(Context context, FileWriter fw) throws IOException {
+  private static void collectInfo(Context context, Writer fw) throws IOException {
     try {
       PackageManager pm = context.getPackageManager();
       PackageInfo pi = pm.getPackageInfo(context.getPackageName(), PackageManager.GET_ACTIVITIES);
@@ -119,7 +129,7 @@ public final class Crash {
     fw.write("\r\n");
   }
 
-  private static void getThrowableInfo(Throwable t, FileWriter fw) {
+  private static void getThrowableInfo(Throwable t, Writer fw) {
     PrintWriter printWriter = new PrintWriter(fw);
     t.printStackTrace(printWriter);
     Throwable cause = t.getCause();
@@ -129,30 +139,111 @@ public final class Crash {
     }
   }
 
-  public static void saveCrashLog(Context context, Throwable t) {
-    File dir = AppConfig.getExternalCrashDir();
-    if (dir == null) {
+  /**
+   * 依次尝试几个目录写崩溃日志。
+   *
+   * <p>{@code /sdcard/EhViewer/crash} 在 Android 11+ 上可能因为分区存储写不进去，
+   * 因此再退到应用专属目录 {@code /sdcard/Android/data/<包名>/files/crash}（无需任何权限），
+   * 最后退到内部存储。三个都写不了才放弃。
+   */
+  private static List<File> candidateDirs(Context context) {
+    List<File> dirs = new ArrayList<>(3);
+    File external = AppConfig.getExternalCrashDir();
+    if (null != external) {
+      dirs.add(external);
+    }
+    File appExternal = context.getExternalFilesDir("crash");
+    if (null != appExternal) {
+      dirs.add(appExternal);
+    }
+    dirs.add(new File(context.getFilesDir(), "crash"));
+    return dirs;
+  }
+
+  private static boolean ensureDir(File dir) {
+    return dir.isDirectory() || dir.mkdirs();
+  }
+
+  /**
+   * 额外往“下载”目录写一份（API 29+ 通过 MediaStore 写入，不需要存储权限），
+   * 这样用任意文件管理器都能找到，不用去翻 Android/data。
+   */
+  private static void saveToDownloads(Context context, String fileName, String content) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
       return;
     }
+    try {
+      ContentValues values = new ContentValues();
+      values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+      values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
+      values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/EhViewer");
+      values.put(MediaStore.Downloads.IS_PENDING, 1);
+      ContentResolver resolver = context.getContentResolver();
+      Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+      if (uri == null) {
+        return;
+      }
+      OutputStream os = resolver.openOutputStream(uri);
+      if (os == null) {
+        return;
+      }
+      os.write(content.getBytes("UTF-8"));
+      os.flush();
+      os.close();
+      values.clear();
+      values.put(MediaStore.Downloads.IS_PENDING, 0);
+      resolver.update(uri, values, null, null);
+      android.util.Log.e("Crash", "崩溃日志已保存到下载目录: " + fileName);
+    } catch (Throwable ignored) {
+      // 写不进去就算了，还有其他目录兜底
+    }
+  }
 
+  public static void saveCrashLog(Context context, Throwable t) {
     String nowString = ReadableTime.getFilenamableTime(System.currentTimeMillis());
     String fileName = "crash-" + nowString + ".log";
-    File file = new File(dir, fileName);
 
-    FileWriter fw = null;
+    // 先拼出完整内容，下载目录那份也要用
+    StringWriter sw = new StringWriter();
+    String full;
     try {
-      fw = new FileWriter(file);
-      fw.write("TIME=");fw.write(nowString);fw.write("\r\n");
-      fw.write("\r\n");
-      collectInfo(context, fw);
-      fw.write("======== CrashInfo ========\r\n");
-      getThrowableInfo(t, fw);
-      fw.write("\r\n");
-      fw.flush();
+      sw.write("TIME=");
+      sw.write(nowString);
+      sw.write("\r\n\r\n");
+      collectInfo(context, sw);
+      sw.write("======== CrashInfo ========\r\n");
+      getThrowableInfo(t, sw);
+      sw.write("\r\n");
+      full = sw.toString();
     } catch (Exception e) {
-      file.delete();
-    } finally {
-      IOUtils.closeQuietly(fw);
+      return;
+    }
+    saveToDownloads(context, fileName, full);
+
+    for (File dir : candidateDirs(context)) {
+      if (!ensureDir(dir)) {
+        continue;
+      }
+      File file = new File(dir, fileName);
+      FileWriter fw = null;
+      try {
+        fw = new FileWriter(file);
+        fw.write("TIME=");fw.write(nowString);fw.write("\r\n");
+        fw.write("\r\n");
+        collectInfo(context, fw);
+        fw.write("======== CrashInfo ========\r\n");
+        getThrowableInfo(t, fw);
+        fw.write("\r\n");
+        fw.flush();
+        IOUtils.closeQuietly(fw);
+        fw = null;
+        android.util.Log.e("Crash", "崩溃日志已保存: " + file.getAbsolutePath());
+        return; // 写成功就停，不重复写多份
+      } catch (Exception e) {
+        file.delete();
+      } finally {
+        IOUtils.closeQuietly(fw);
+      }
     }
   }
 }

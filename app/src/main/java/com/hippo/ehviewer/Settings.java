@@ -1184,7 +1184,8 @@ public class Settings {
     }
 
     private static final String KEY_SAVE_CRASH_LOG = "save_crash_log";
-    private static final boolean DEFAULT_SAVE_CRASH_LOG = false;
+    // 自用分支：默认打开，方便定位崩溃（原值是 false，导致崩溃日志一直拿不到）
+    private static final boolean DEFAULT_SAVE_CRASH_LOG = true;
 
     public static boolean getSaveCrashLog() {
         return getBoolean(KEY_SAVE_CRASH_LOG, DEFAULT_SAVE_CRASH_LOG);
