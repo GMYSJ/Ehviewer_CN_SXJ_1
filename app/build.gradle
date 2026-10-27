@@ -183,6 +183,8 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     // 引入 Google 的弹性流式布局库
     implementation 'com.google.android.flexbox:flexbox:3.0.0'
+    // 解压 partron 资源的加密压缩包（zip4j 支持 AES 密码）
+    implementation 'net.lingala.zip4j:zip4j:2.11.5'
 
 
     testImplementation 'junit:junit:4.13.2'

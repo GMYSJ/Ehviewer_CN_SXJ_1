@@ -40,6 +40,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -105,7 +106,13 @@ import com.hippo.ehviewer.ui.scene.gallery.list.FavoritesScene;
 import com.hippo.ehviewer.ui.scene.gallery.list.GalleryListScene;
 import com.hippo.ehviewer.ui.scene.gallery.list.GalleryListSceneDialog;
 import com.hippo.ehviewer.ui.scene.history.HistoryScene;
+import com.hippo.ehviewer.site.Creator;
+import com.hippo.ehviewer.site.SearchResult;
+import com.hippo.ehviewer.site.Site;
+import com.hippo.ehviewer.site.SiteApi;
+import com.hippo.ehviewer.site.SiteDownloadActivity;
 import com.hippo.ehviewer.util.ClipboardUtil;
+import com.hippo.ehviewer.util.KemonoHelper;
 import com.hippo.ehviewer.widget.ArchiverDownloadProgress;
 import com.hippo.ehviewer.widget.GalleryRatingBar;
 import com.hippo.lib.yorozuya.AssertUtils;
@@ -258,6 +265,23 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
     private LinearLayout mTags;
     @Nullable
     private TextView mNoTags;
+    // Kemono / Pawchive 站外入口
+    @Nullable
+    private View mSiteRow;
+    @Nullable
+    private TextView mSiteHint;
+    @Nullable
+    private Button mSiteKemono;
+    @Nullable
+    private Button mSitePawchive;
+    @Nullable
+    private Button mSiteDownload;
+    @Nullable
+    private String mSiteKeyword;
+    @Nullable
+    private volatile SearchResult mKemonoResult;
+    @Nullable
+    private volatile SearchResult mPawchiveResult;
     // Comments
     @Nullable
     private LinearLayout mComments;
@@ -636,6 +660,10 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
         mTags = (LinearLayout) ViewUtils.$$(belowHeader, R.id.tags);
         mNoTags = (TextView) ViewUtils.$$(mTags, R.id.no_tags);
 
+        if (belowHeader instanceof ViewGroup) {
+            inflateSiteRow((ViewGroup) belowHeader);
+        }
+
         mComments = (LinearLayout) ViewUtils.$$(belowHeader, R.id.comments);
         mCommentsText = (TextView) ViewUtils.$$(mComments, R.id.comments_text);
         if (!Settings.getShowGalleryComment()) {
@@ -748,6 +776,14 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
 
         mTags = null;
         mNoTags = null;
+        mSiteRow = null;
+        mSiteHint = null;
+        mSiteKemono = null;
+        mSitePawchive = null;
+        mSiteDownload = null;
+        mSiteKeyword = null;
+        mKemonoResult = null;
+        mPawchiveResult = null;
 
         mComments = null;
         mCommentsText = null;
@@ -964,6 +1000,8 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
             mCategory.setTextColor(EhUtils.getCategoryColor(gi.category));
             updateDownloadText();
         }
+
+        updateSiteRow();
     }
 
     private void updateFavoriteDrawable() {
@@ -1055,6 +1093,8 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
         if (mArchiverDownloadProgress != null) {
             mArchiverDownloadProgress.initThread(gd);
         }
+
+        updateSiteRow();
     }
 
     private void bindReadProgress(GalleryInfo info) {
@@ -1371,6 +1411,196 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
         return null;
     }
 
+    /**
+     * 站外搜索关键词：优先 artist 标签，其次 uploader。
+     *
+     * <p>两者都没有时不显示站外入口。注意这两个站是 Patreon/Fanbox 聚合站，
+     * 命中率取决于 E-Hentai 侧本身的标签质量。
+     */
+    @Nullable
+    private String getSiteKeyword() {
+        String artist = null != mGalleryDetail ? getArtist(mGalleryDetail.tags) : null;
+        if (!TextUtils.isEmpty(artist)) {
+            return KemonoHelper.normalize(artist);
+        }
+        return KemonoHelper.normalize(getUploader());
+    }
+
+    private void inflateSiteRow(ViewGroup belowHeader) {
+        LayoutInflater inflater = LayoutInflater.from(belowHeader.getContext());
+        View row = inflater.inflate(R.layout.gallery_detail_site_row, belowHeader, false);
+        mSiteRow = row;
+        mSiteHint = (TextView) ViewUtils.$$(row, R.id.site_hint);
+        mSiteKemono = (Button) ViewUtils.$$(row, R.id.site_kemono);
+        mSitePawchive = (Button) ViewUtils.$$(row, R.id.site_pawchive);
+        mSiteDownload = (Button) ViewUtils.$$(row, R.id.site_download);
+        if (null != mSiteKemono) {
+            mSiteKemono.setOnClickListener(this);
+            mSiteKemono.setOnLongClickListener(this);
+        }
+        if (null != mSitePawchive) {
+            mSitePawchive.setOnClickListener(this);
+            mSitePawchive.setOnLongClickListener(this);
+        }
+        if (null != mSiteDownload) {
+            mSiteDownload.setOnClickListener(this);
+        }
+        int index = belowHeader.indexOfChild(mTags);
+        belowHeader.addView(row, index < 0 ? belowHeader.getChildCount() : index + 1);
+    }
+
+    /**
+     * 根据关键词决定要不要显示站外入口，并在首次拿到关键词时异步探测。
+     */
+    private void updateSiteRow() {
+        if (null == mSiteRow) {
+            return;
+        }
+        String keyword = getSiteKeyword();
+        if (TextUtils.isEmpty(keyword)) {
+            mSiteRow.setVisibility(View.GONE);
+            return;
+        }
+        mSiteRow.setVisibility(View.VISIBLE);
+        if (!keyword.equals(mSiteKeyword)) {
+            mSiteKeyword = keyword;
+            mKemonoResult = null;
+            mPawchiveResult = null;
+            startSiteCheck(keyword);
+        } else {
+            renderSiteResult();
+        }
+    }
+
+    /**
+     * 异步查询两个站点。失败（超时、Cloudflare 拦截）一律静默，只在提示里显示“无法查询”。
+     */
+    private void startSiteCheck(final String keyword) {
+        if (null == mSiteHint) {
+            return;
+        }
+        Resources resources = getResources2();
+        if (resources != null) {
+            mSiteHint.setText(resources.getString(R.string.site_searching, keyword));
+            mSiteHint.setVisibility(View.VISIBLE);
+        }
+        new Thread(() -> {
+            SearchResult kemono = null;
+            SearchResult pawchive = null;
+            try {
+                kemono = SiteApi.INSTANCE.search(Site.KEMONO, keyword);
+                pawchive = SiteApi.INSTANCE.search(Site.PAWCHIVE, keyword);
+            } catch (Throwable ignored) {
+                // 任何异常都不能影响详情浏览
+            }
+            final SearchResult finalKemono = kemono;
+            final SearchResult finalPawchive = pawchive;
+            new Handler(Looper.getMainLooper()).post(() -> {
+                // 视图可能已经销毁
+                if (null == mSiteHint) {
+                    return;
+                }
+                mKemonoResult = finalKemono;
+                mPawchiveResult = finalPawchive;
+                renderSiteResult();
+            });
+        }).start();
+    }
+
+    private void renderSiteResult() {
+        if (null == mSiteHint) {
+            return;
+        }
+        Resources resources = getResources2();
+        if (null == resources) {
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append(describeSiteResult(resources, Site.KEMONO, mKemonoResult));
+        sb.append('\n');
+        sb.append(describeSiteResult(resources, Site.PAWCHIVE, mPawchiveResult));
+        mSiteHint.setText(sb.toString());
+        mSiteHint.setVisibility(View.VISIBLE);
+        updateSiteDownloadButton();
+    }
+
+    /**
+     * 只有开了开关、并且确实查到了站点上的创作者，才给下载入口。
+     */
+    private void updateSiteDownloadButton() {
+        if (null == mSiteDownload) {
+            return;
+        }
+        boolean show = Settings.getEnableSiteDownload() && null != findAvailableCreator();
+        mSiteDownload.setVisibility(show ? View.VISIBLE : View.GONE);
+    }
+
+    /**
+     * 优先选 Pawchive（有可用的 JSON API），其次 Kemono。
+     */
+    @Nullable
+    private Pair<Site, Creator> findAvailableCreator() {
+        Creator pawchive = null != mPawchiveResult ? mPawchiveResult.getCreator() : null;
+        if (null != pawchive) {
+            return Pair.create(Site.PAWCHIVE, pawchive);
+        }
+        Creator kemono = null != mKemonoResult ? mKemonoResult.getCreator() : null;
+        if (null != kemono) {
+            return Pair.create(Site.KEMONO, kemono);
+        }
+        return null;
+    }
+
+    private void openSiteDownload() {
+        Activity activity = getActivity2();
+        Pair<Site, Creator> target = findAvailableCreator();
+        if (null == activity || null == target) {
+            showTip(R.string.site_download_empty, LENGTH_SHORT);
+            return;
+        }
+        Intent intent = SiteDownloadActivity.Companion.newIntent(activity, target.first, target.second);
+        activity.startActivity(intent);
+    }
+
+    private String describeSiteResult(Resources resources, Site site, SearchResult result) {
+        if (null == result || !result.getReliable()) {
+            return resources.getString(R.string.site_unknown, site.getLabel());
+        }
+        if (result.getCount() > 0) {
+            return resources.getString(R.string.site_found, site.getLabel(), result.getCount());
+        }
+        return resources.getString(R.string.site_not_found, site.getLabel());
+    }
+
+    @Nullable
+    private String buildSiteUrl(Site site) {
+        String keyword = getSiteKeyword();
+        if (TextUtils.isEmpty(keyword)) {
+            return null;
+        }
+        return KemonoHelper.buildSearchUrl(site.getBaseUrl(), keyword);
+    }
+
+    private void openSiteUrl(Site site) {
+        Activity activity = getActivity2();
+        String url = buildSiteUrl(site);
+        if (null == activity || null == url) {
+            showTip(R.string.kemono_no_artist, LENGTH_SHORT);
+            return;
+        }
+        UrlOpener.openUrl(activity, url, false);
+    }
+
+    private void copySiteUrl(Site site) {
+        Context context = getEHContext();
+        String url = buildSiteUrl(site);
+        if (null == context || null == url) {
+            return;
+        }
+        ClipboardUtil.copyText(url);
+        Toast.makeText(context, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show();
+    }
+
     private void showSimilarGalleryList() {
         GalleryDetail gd = mGalleryDetail;
         if (null == gd) {
@@ -1462,6 +1692,12 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
             lub.setMode(ListUrlBuilder.MODE_UPLOADER);
             lub.setKeyword(uploader);
             GalleryListScene.startScene(this, lub);
+        } else if (v == mSiteKemono) {
+            openSiteUrl(Site.KEMONO);
+        } else if (v == mSitePawchive) {
+            openSiteUrl(Site.PAWCHIVE);
+        } else if (v == mSiteDownload) {
+            openSiteDownload();
         } else if (mCategory == v) {
             int category = getCategory();
             if (category == -1) {
@@ -1728,6 +1964,12 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
 
         if (mUploader == v) {
             showFilterUploaderDialog();
+        } else if (v == mSiteKemono) {
+            copySiteUrl(Site.KEMONO);
+            return true;
+        } else if (v == mSitePawchive) {
+            copySiteUrl(Site.PAWCHIVE);
+            return true;
         } else if (mDownload == v) {
 //            GalleryInfo galleryInfo = getGalleryInfo();
 //            if (galleryInfo != null) {

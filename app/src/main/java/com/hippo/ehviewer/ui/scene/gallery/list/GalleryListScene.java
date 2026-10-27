@@ -98,6 +98,7 @@ import com.hippo.ehviewer.event.SomethingNeedRefresh;
 import com.hippo.ehviewer.ui.CommonOperations;
 import com.hippo.ehviewer.ui.GalleryActivity;
 import com.hippo.ehviewer.ui.MainActivity;
+import com.hippo.ehviewer.UrlOpener;
 import com.hippo.ehviewer.ui.TagSelectorActivity;
 import com.hippo.ehviewer.ui.dialog.SelectItemWithIconAdapter;
 import com.hippo.ehviewer.ui.scene.BaseScene;
@@ -105,6 +106,9 @@ import com.hippo.ehviewer.ui.scene.EhCallback;
 import com.hippo.ehviewer.ui.scene.ProgressScene;
 import com.hippo.ehviewer.ui.scene.gallery.detail.GalleryDetailScene;
 import com.hippo.ehviewer.util.TagTranslationUtil;
+import com.hippo.ehviewer.util.ClipboardUtil;
+import com.hippo.ehviewer.util.KemonoHelper;
+import com.hippo.ehviewer.site.Site;
 import com.hippo.ehviewer.widget.GalleryInfoContentHelper;
 import com.hippo.ehviewer.widget.JumpDateSelector;
 import com.hippo.ehviewer.widget.SearchBar;
@@ -489,10 +493,68 @@ public final class GalleryListScene extends BaseScene
             if (result2 != null) {
                 return Collections.singletonList(new GalleryPageUrlSuggestion(result2.gid, result2.pToken, result2.page));
             }
+            // 拿当前正在输入的关键词，直接给出两个站的跳转入口
+            String keyword = KemonoHelper.normalize(text);
+            if (keyword != null && keyword.length() >= 2) {
+                List<SearchBar.Suggestion> list = new ArrayList<>(2);
+                list.add(new SiteSuggestion(Site.KEMONO, keyword));
+                list.add(new SiteSuggestion(Site.PAWCHIVE, keyword));
+                return list;
+            }
             return null;
         });
+    }
 
+    /**
+     * 把当前搜索关键词带到 Kemono / Pawchive 搜索。
+     * 这两个站上不存在“上传到 E-Hentai 的作者”，所以按关键词搜索才是有效路径。
+     */
+    private class SiteSuggestion extends SearchBar.Suggestion {
 
+        private final Site mSite;
+        private final String mKeyword;
+
+        SiteSuggestion(Site site, String keyword) {
+            mSite = site;
+            mKeyword = keyword;
+        }
+
+        private String getSearchUrl() {
+            return KemonoHelper.buildSearchUrl(mSite.getBaseUrl(), mKeyword);
+        }
+
+        @Override
+        public CharSequence getText(float textSize) {
+            Resources resources = getResources2();
+            if (null != resources) {
+                return resources.getString(R.string.site_search_with_keyword, mSite.getLabel(), mKeyword);
+            }
+            return mSite.getLabel() + " - " + mKeyword;
+        }
+
+        @Override
+        public CharSequence getText(TextView textView) {
+            return getText(0f);
+        }
+
+        @Override
+        public void onClick() {
+            Activity activity = getActivity2();
+            String url = getSearchUrl();
+            if (null != activity && null != url) {
+                UrlOpener.openUrl(activity, url, false);
+            }
+        }
+
+        @Override
+        public void onLongClick() {
+            Context context = getEHContext();
+            String url = getSearchUrl();
+            if (null != context && null != url) {
+                ClipboardUtil.copyText(url);
+                Toast.makeText(context, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show();
+            }
+        }
     }
 
     /**

@@ -1100,4 +1100,28 @@
     <string name="import_album_success">Imported %d images successfully</string>
     <!-- TagSelectActivity -->
     <string name="tag_search_entrance">Tag Selector</string>
+
+    <!-- Kemono / Pawchive -->
+    <string name="action_view_on_kemono">View on Kemono</string>
+    <string name="action_view_on_pawchive">View on Pawchive</string>
+    <string name="kemono_no_artist">This gallery has no artist information</string>
+    <string name="site_searching">Checking %1$s…</string>
+    <string name="site_found">%1$s: %2$d result(s)</string>
+    <string name="site_not_found">%1$s: nothing found</string>
+    <string name="site_unknown">%1$s: unavailable (Cloudflare?)</string>
+    <string name="site_search_with_keyword">Search “%2$s” on %1$s</string>
+
+    <!-- Kemono / Pawchive 下载 -->
+    <string name="site_download_action">Download this creator</string>
+    <string name="site_download_start">Download selected</string>
+    <string name="site_download_loading">Loading posts…</string>
+    <string name="site_download_choose">Select posts to download</string>
+    <string name="site_download_empty">No posts available (blocked by Cloudflare?)</string>
+    <string name="site_download_no_selection">Nothing selected yet</string>
+    <string name="site_download_progress">%1$d / %2$d files, %3$d imported</string>
+    <string name="site_download_done">Done: %1$d imported</string>
+    <string name="site_download_title">Downloading from Kemono / Pawchive</string>
+    <string name="site_download_channel">Site download</string>
+    <string name="settings_site_download_title">Kemono / Pawchive download (experimental)</string>
+    <string name="settings_site_download_summary">Allow downloading and importing creator posts inside the app</string>
 </resources>

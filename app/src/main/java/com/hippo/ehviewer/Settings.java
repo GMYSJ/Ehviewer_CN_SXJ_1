@@ -1410,6 +1410,22 @@ public class Settings {
 
     public static final String KEY_SHOW_GALLERY_COMMENT = "show_gallery_comment";
 
+    /**
+     * 是否允许在软件内下载 Kemono / Pawchive 资源并导入本地。
+     * 实验性功能，默认关闭，避免误触产生流量和存储开销。
+     */
+    public static final String KEY_ENABLE_SITE_DOWNLOAD = "enable_site_download";
+
+    private static boolean DEFAULT_ENABLE_SITE_DOWNLOAD = false;
+
+    public static boolean getEnableSiteDownload() {
+        return getBoolean(KEY_ENABLE_SITE_DOWNLOAD, DEFAULT_ENABLE_SITE_DOWNLOAD);
+    }
+
+    public static void setEnableSiteDownload(boolean value) {
+        putBoolean(KEY_ENABLE_SITE_DOWNLOAD, value);
+    }
+
     private static boolean IS_SHOW_GALLERY_COMMENT = true;
 
     public static boolean getShowGalleryComment() {

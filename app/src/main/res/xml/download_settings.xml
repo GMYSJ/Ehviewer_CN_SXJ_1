@@ -119,4 +119,11 @@
         android:title="@string/settings_download_clean_invalid_download"
         app:allowDividerAbove="true"
         app:iconSpaceReserved="false" />
+
+    <com.hippo.preference.SwitchPreference
+        android:defaultValue="false"
+        android:key="enable_site_download"
+        android:title="@string/settings_site_download_title"
+        android:summary="@string/settings_site_download_summary"
+        app:allowDividerAbove="true" />
 </PreferenceScreen>

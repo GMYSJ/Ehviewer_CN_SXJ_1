@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" /> <!-- Android 10 (API 29) 及以上版本，可能需要添加 -->
@@ -263,6 +264,16 @@
                 android:name="com.hippo.content.FILE_PROVIDER_PATHS"
                 android:resource="@xml/filepaths" />
         </provider>
+        <activity
+            android:name=".site.SiteDownloadActivity"
+            android:configChanges="screenSize|uiMode"
+            android:label="@string/site_download_title"
+            android:theme="@style/AppTheme.Toolbar" />
+
+        <service
+            android:name=".site.SiteDownloadService"
+            android:exported="false" />
+
     </application>
 
 </manifest>

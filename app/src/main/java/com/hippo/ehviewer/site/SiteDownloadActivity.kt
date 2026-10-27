@@ -1,0 +1,147 @@
+package com.hippo.ehviewer.site
+
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.View
+import android.widget.ArrayAdapter
+import android.widget.ListView
+import android.widget.TextView
+import android.widget.Toast
+import com.hippo.ehviewer.R
+import com.hippo.ehviewer.ui.ToolbarActivity
+
+/**
+ * 列出某个创作者在 Kemono / Pawchive 上的帖子，勾选后批量下载。
+ *
+ * 下载过程由 [SiteDownloadService] 在后台完成，这里只负责展示题目和进度。
+ */
+class SiteDownloadActivity : ToolbarActivity() {
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val posts = ArrayList<Post>()
+
+    private lateinit var site: Site
+    private lateinit var creator: Creator
+    private lateinit var listView: ListView
+    private lateinit var progressView: TextView
+    private lateinit var downloadButton: View
+    private lateinit var cancelButton: View
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_site_download)
+
+        site = Site.valueOf(intent.getStringExtra(EXTRA_SITE) ?: Site.PAWCHIVE.name)
+        creator = Creator(
+            intent.getStringExtra(EXTRA_SERVICE) ?: "",
+            intent.getStringExtra(EXTRA_USER) ?: "",
+        )
+
+        listView = findViewById(R.id.post_list)
+        progressView = findViewById(R.id.progress)
+        downloadButton = findViewById(R.id.download)
+        cancelButton = findViewById(R.id.cancel)
+
+        setTitle(site.label + " - " + creator.userId)
+        listView.choiceMode = ListView.CHOICE_MODE_MULTIPLE
+        downloadButton.isEnabled = false
+        downloadButton.setOnClickListener { startDownload() }
+        cancelButton.setOnClickListener {
+            SiteDownloadService.cancel()
+            finish()
+        }
+
+        loadPosts()
+    }
+
+    private fun loadPosts() {
+        progressView.setText(R.string.site_download_loading)
+        Thread {
+            val fetched = SiteApi.fetchPosts(site, creator) ?: emptyList()
+            handler.post {
+                posts.clear()
+                posts.addAll(fetched)
+                renderPosts()
+            }
+        }.start()
+    }
+
+    private fun renderPosts() {
+        val titles: List<String> = posts.map { post ->
+            (post.title ?: post.id) + "  (" + post.attachments.size + ")"
+        }
+        listView.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_list_item_multiple_choice,
+            titles,
+        )
+        downloadButton.isEnabled = posts.isNotEmpty()
+        progressView.text = if (posts.isEmpty()) {
+            getString(R.string.site_download_empty)
+        } else {
+            getString(R.string.site_download_choose)
+        }
+    }
+
+    private fun startDownload() {
+        val checked = listView.checkedItemPositions
+        val selected = ArrayList<Post>()
+        for (i in posts.indices) {
+            if (checked.get(i)) {
+                selected.add(posts[i])
+            }
+        }
+        if (selected.isEmpty()) {
+            Toast.makeText(this, R.string.site_download_no_selection, Toast.LENGTH_SHORT).show()
+            return
+        }
+        downloadButton.isEnabled = false
+        SiteDownloadService.start(this, site, creator, selected)
+        pollProgress()
+    }
+
+    private fun pollProgress() {
+        handler.postDelayed({
+            val state = SiteDownloadService.STATE
+            progressView.text = getString(
+                R.string.site_download_progress,
+                state.completed,
+                state.total,
+                state.imported,
+            )
+            if (state.done) {
+                Toast.makeText(
+                    this,
+                    getString(R.string.site_download_done, state.imported),
+                    Toast.LENGTH_SHORT,
+                ).show()
+                downloadButton.isEnabled = true
+            } else {
+                pollProgress()
+            }
+        }, POLL_INTERVAL_MS)
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        super.onDestroy()
+    }
+
+    companion object {
+        private const val EXTRA_SITE = "site"
+        private const val EXTRA_SERVICE = "service"
+        private const val EXTRA_USER = "user"
+        private const val POLL_INTERVAL_MS = 500L
+
+        fun newIntent(context: Context, site: Site, creator: Creator): Intent {
+            val intent = Intent(context, SiteDownloadActivity::class.java)
+            intent.putExtra(EXTRA_SITE, site.name)
+            intent.putExtra(EXTRA_SERVICE, creator.service)
+            intent.putExtra(EXTRA_USER, creator.userId)
+            return intent
+        }
+    }
+}
