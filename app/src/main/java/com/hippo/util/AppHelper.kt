@@ -153,8 +153,8 @@ class AppHelper {
             val parts2 = version2.split("\\.".toRegex()).toTypedArray()
             val length = parts1.size.coerceAtLeast(parts2.size)
             for (i in 0 until length) {
-                val part1 = if (i < parts1.size) parts1[i].toInt() else 0
-                val part2 = if (i < parts2.size) parts2[i].toInt() else 0
+                val part1 = if (i < parts1.size) parseVersionPart(parts1[i]) else 0
+                val part2 = if (i < parts2.size) parseVersionPart(parts2[i]) else 0
                 if (part1 < part2) {
                     return -1
                 } else if (part1 > part2) {
@@ -162,6 +162,25 @@ class AppHelper {
                 }
             }
             return 0
+        }
+
+        /**
+         * 版本号的某一段可能带后缀，例如 {@code 2.0.2.6-save.1} 里的 {@code "6-save"}。
+         *
+         * <p>原实现直接 {@code toInt()}，遇到这种后缀会抛 NumberFormatException。
+         * 而 AppUpdater 只捕获 JSONException，异常漏到后台线程导致闪退。
+         * 这里只取前导数字，解析不出来就当 0，保证任何版本名都不会崩。
+         */
+        @JvmStatic
+        private fun parseVersionPart(part: String): Int {
+            var end = 0
+            while (end < part.length && part[end].isDigit()) {
+                end++
+            }
+            if (end == 0) {
+                return 0
+            }
+            return part.substring(0, end).toIntOrNull() ?: 0
         }
     }
 }

@@ -212,11 +212,18 @@ class AppUpdater(private val name: String, source: BufferedSource) {
                         return false
                     }
                 }
-                updateResult = compareVersion(currentVersion, tempUpdateData.getString(VERSION))
+                val remoteVersion = tempUpdateData.getString(VERSION) ?: "0.0.0"
+                val remoteVersionCode = tempUpdateData.getInteger(VERSION_CODE) ?: 0
+                updateResult = compareVersion(currentVersion, remoteVersion)
                 return if (updateResult < 0) {
                     true
-                } else currentVersionCode < tempUpdateData.getInteger(VERSION_CODE)
+                } else currentVersionCode < remoteVersionCode
             } catch (e: JSONException) {
+                Log.e(TAG, e.message, e)
+                Analytics.recordException(e)
+                return false
+            } catch (e: RuntimeException) {
+                // 版本号带非数字后缀（如 2.0.2.6-save.1）、字段缺失等都不该导致闪退
                 Log.e(TAG, e.message, e)
                 Analytics.recordException(e)
                 return false
