@@ -54,6 +54,16 @@ android {
         checkReleaseBuilds true
     }
 
+    signingConfigs {
+        debug {
+            storeFile rootProject.file('test.key')
+            storePassword '123456'
+            keyAlias '1234'
+            keyPassword '123456'
+            storeType 'pkcs12'
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
@@ -63,6 +73,7 @@ android {
         debug {
             applicationIdSuffix ".debug1"
             buildConfigField 'String', 'FILE_PROVIDER_AUTHORITY', '"com.hippo.ehviewer.debug.fileprovider"'
+            signingConfig signingConfigs.debug
         }
     }
 
