@@ -414,14 +414,20 @@ class SiteDownloadService : Service() {
                         val buffer = ByteArray(BUFFER_SIZE)
                         var windowStart = System.currentTimeMillis()
                         var windowBytes = 0L
+                        // 龟速检测用更长的时间窗，避免 TCP 抖动被误判
+                        var slowStart = windowStart
+                        var slowBytes = 0L
+                        var slowAbort = false
                         while (!STATE.cancelRequested) {
                             val read = input.read(buffer)
                             if (read == -1) break
                             out.write(buffer, 0, read)
                             STATE.bytesDone += read
                             windowBytes += read
-                            // 每半秒测一次速度，顺便节流刷新通知
+                            slowBytes += read
                             val now = System.currentTimeMillis()
+
+                            // 每半秒测一次速度，顺便节流刷新通知
                             val elapsed = now - windowStart
                             if (elapsed >= SPEED_WINDOW_MS) {
                                 STATE.speed = windowBytes * 1000 / elapsed
@@ -429,10 +435,31 @@ class SiteDownloadService : Service() {
                                 windowBytes = 0L
                                 publish(force = false)
                             }
+
+                            // 3 秒内的平均速度还是低得离谱，说明这条连接已经被限速了。
+                            // 光靠 readTimeout 抓不住：数据每秒流几 KB 也算“有数据”，永不超时。
+                            val slowElapsed = now - slowStart
+                            if (slowElapsed >= SLOW_CHECK_WINDOW_MS) {
+                                val bps = slowBytes * 1000 / slowElapsed
+                                if (bps < MIN_ACCEPTABLE_BPS) {
+                                    SiteLog.d(
+                                        this,
+                                        "连接过慢（${bps / 1024} KB/s），断开重连：${target.name}",
+                                    )
+                                    slowAbort = true
+                                    break
+                                }
+                                slowStart = now
+                                slowBytes = 0L
+                            }
                         }
                         if (windowBytes > 0) {
                             val elapsed = (System.currentTimeMillis() - windowStart).coerceAtLeast(1)
                             STATE.speed = windowBytes * 1000 / elapsed
+                        }
+                        if (slowAbort) {
+                            // 主动放弃这条连接，让外层换一条从头续传
+                            return false
                         }
                     }
                 }
@@ -595,6 +622,18 @@ class SiteDownloadService : Service() {
 
         /** 速度采样窗口 */
         private const val SPEED_WINDOW_MS = 500L
+
+        /**
+         * 龟速判定窗口。
+         *
+         * <p>3 秒内平均速度低于 [MIN_ACCEPTABLE_BPS] 就认为这条连接已被 CDN 限速，
+         * 主动断开换一条。实测正常连接 1~2 MB/s，被限速的连接只有 4~8 KB/s，
+         * 两者差两个数量级，很好区分。
+         */
+        private const val SLOW_CHECK_WINDOW_MS = 3000L
+
+        /** 低于这个速度（48 KB/s）就放弃当前连接；再慢下去 250MB 要下几个小时 */
+        private const val MIN_ACCEPTABLE_BPS = 48L * 1024
 
         /** 上次发起页面请求的时间，用于 [waitForPageSlot] */
         @Volatile
