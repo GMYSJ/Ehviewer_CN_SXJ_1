@@ -48,10 +48,31 @@ enum class Site(
         private val client: OkHttpClient by lazy {
             OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)
-                // 读超时给足：CDN 偶尔会卡住十几秒才继续吐数据，
-                // 原来 30 秒会把它当成失败，触发整段重试，表现就是“下着下着不动了”
+                // 页面 / API 用，读超时给足：CDN 偶尔会卡住十几秒才继续吐数据
                 .readTimeout(60, TimeUnit.SECONDS)
                 .writeTimeout(60, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .followRedirects(true)
+                .build()
+        }
+
+        /**
+         * 下载专用的连接池，<b>读超时故意设得很短</b>。
+         *
+         * <p>实测这条 CDN 的连接分两种：一条是正常的，4MB 只要 3.4 秒（约 1.2 MB/s）；
+         * 另一种是被随机掐过的，之后会掉到 4~8 KB/s 苟着。后者如果放着不管，
+         * 250MB 的文件能拖几个小时。
+         *
+         * <p>所以把读超时压到 6 秒，当成一个「龟速检测器」：
+         * 8 KB/s 的流读完 64KB 缓冲要 8 秒，必然超时 → 断开 → 用 Range 从断点重连。
+         * 新连接有大约一半的概率落到快通道，比死守一条慢连接快一个数量级。
+         * 正常速度下 64KB 只要几十毫秒，绝不会被误杀。
+         */
+        private val downloadClient: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(6, TimeUnit.SECONDS)
+                .writeTimeout(10, TimeUnit.SECONDS)
                 .retryOnConnectionFailure(true)
                 .followRedirects(true)
                 .build()
@@ -97,7 +118,7 @@ enum class Site(
                 .url(url)
                 .header("User-Agent", KemonoHelper.USER_AGENT)
                 .header("Range", "bytes=$startRange-")
-            return client.newCall(builder.build())
+            return downloadClient.newCall(builder.build())
         }
     }
 }

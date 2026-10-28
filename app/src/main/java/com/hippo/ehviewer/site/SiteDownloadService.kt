@@ -15,6 +15,7 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.net.SocketTimeoutException
 import java.util.Locale
 
 /**
@@ -311,11 +312,14 @@ class SiteDownloadService : Service() {
     }
 
     /**
-     * 下载一个文件：单连接、顺序、断点续传。
+     * 下载一个文件：单连接、顺序、断点续传，<b>连接变慢就换一条</b>。
      *
-     * <p>这里刻意<b>不</b>做多连接分段。实测这条 CDN 会惩罚并发：
-     * 同一个文件单连接能跑 5 MB/s，切成两段并行反而掉到 0.2 MB/s，
-     * 第二条连接还会被直接掐断。所以并发越少越快，一条连接下到底。
+     * <p>不做多连接并发：实测这条 CDN 会惩罚并发，两条连接并行反而比一条慢一个数量级。
+     *
+     * <p>但单连接也不是一直快——实测它会把一条连接随机降到 4~8 KB/s 苟着，
+     * 250MB 能拖几个小时。所以读超时（见 Site.downloadClient）压到 6 秒，
+     * 龟速连接会被主动断开，然后在这里用 Range 从断点重连。
+     * 新连接有大约一半概率落到快通道（1~2 MB/s），所以多试几次比死守一条划算。
      */
     private fun downloadFile(url: String, target: File): Boolean {
         // 旧版本分段下载留下的残片跟单连接下载不通用，先清掉
@@ -324,9 +328,16 @@ class SiteDownloadService : Service() {
             if (STATE.cancelRequested) return false
             if (attemptDownload(url, target)) return true
             if (STATE.cancelRequested) return false
-            SiteLog.d(this, "下载失败，第 $attempt 次重试：${target.name}")
+            val done = if (target.exists()) target.length() else 0L
+            SiteLog.d(this, "第 $attempt 次尝试未完成（已下 ${done}B），重连")
+            // 前几次立刻换连接；连续失败说明可能是 IP 被限速，退避等它恢复
+            val delay = if (attempt <= FAST_RETRY_COUNT) {
+                FAST_RETRY_DELAY_MS.toLong()
+            } else {
+                (FAST_RETRY_DELAY_MS shl (attempt - FAST_RETRY_COUNT)).coerceAtMost(8000L)
+            }
             try {
-                Thread.sleep(RETRY_DELAY_MS * attempt)
+                Thread.sleep(delay)
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
                 return false
@@ -425,8 +436,21 @@ class SiteDownloadService : Service() {
                         }
                     }
                 }
-                true
+                // 连接可能被中途掐断：读完了不代表下全了。
+                // 没下全就返回 false，让外层用 Range 从断点接着续。
+                val total = STATE.bytesTotal
+                val done = total <= 0 || target.length() == total
+                if (!done) {
+                    SiteLog.d(this, "本次只下到 ${target.length()}/$total，续传")
+                }
+                done
             }
+        } catch (e: SocketTimeoutException) {
+            // 读超时 = 这条连接被降到龟速了，不是真的出错。
+            // 断开、换个连接、从断点继续，比死守一条慢连接快得多。
+            SiteLog.d(this, "连接过慢已断开：${target.name} 已下 ${target.length()}B")
+            STATE.lastError = ""
+            false
         } catch (e: IOException) {
             STATE.lastError = e.message ?: "IOException"
             false
@@ -550,7 +574,7 @@ class SiteDownloadService : Service() {
         private const val ACTION_CANCEL = "cancel"
         private const val NOTIFICATION_ID = 20261028
         private const val CHANNEL_ID = "site_download"
-        private const val MAX_RETRY = 3
+        private const val MAX_RETRY = 8
         private const val REQUEST_CONTENT = 1
         private const val REQUEST_CANCEL = 2
 
@@ -563,8 +587,11 @@ class SiteDownloadService : Service() {
          * <b>只约束页面请求</b>，CDN 直链下载不受影响。
          */
         private const val PAGE_INTERVAL_MS = 1100L
-        private const val RETRY_DELAY_MS = 1200L
         private const val BUFFER_SIZE = 64 * 1024
+
+        /** 前几次失败立刻重连，不打疲劳战；之后的退避见 [downloadFile] */
+        private const val FAST_RETRY_COUNT = 3
+        private const val FAST_RETRY_DELAY_MS = 300L
 
         /** 速度采样窗口 */
         private const val SPEED_WINDOW_MS = 500L
