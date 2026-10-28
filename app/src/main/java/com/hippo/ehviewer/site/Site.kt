@@ -85,15 +85,18 @@ enum class Site(
         /**
          * 支持断点续传的下载请求。
          *
-         * @param startRange 已下载的字节数；为 0 时不带 Range 头
+         * <p><b>即使从 0 开始也一定带 Range 头</b>，这不是可选项。实测这条 CDN 对
+         * 不带 Range 的完整 GET 只给 10 KB/s 左右、几十秒就断流；一旦带上
+         * {@code Range: bytes=0-}（服务端回 206）立刻变成 1~2 MB/s。
+         * 浏览器下载管理器之所以快，就是因为它默认就带这个头。
+         *
+         * @param startRange 已下载的字节数；为 0 时也照样发 {@code bytes=0-}
          */
         fun newResumableCall(url: String, startRange: Long): Call {
             val builder = Request.Builder()
                 .url(url)
                 .header("User-Agent", KemonoHelper.USER_AGENT)
-            if (startRange > 0) {
-                builder.header("Range", "bytes=$startRange-")
-            }
+                .header("Range", "bytes=$startRange-")
             return client.newCall(builder.build())
         }
     }

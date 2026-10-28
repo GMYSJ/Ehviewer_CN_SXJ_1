@@ -372,7 +372,17 @@ class SiteDownloadService : Service() {
         return try {
             Site.newResumableCall(url, existing).execute().use { response ->
                 if (response.code() == 416) {
-                    // 服务端不接受这个 Range，重头来过
+                    // 416 = 请求起点越过了文件末尾。响应头里带着真实总大小，
+                    // 如果跟本地文件一样大，说明上次其实已经下完了，别白删重下。
+                    val total = response.header("Content-Range")
+                        ?.substringAfter('/', "")?.trim()?.toLongOrNull()
+                    if (total != null && total > 0 && total == target.length()) {
+                        STATE.bytesDone = total
+                        STATE.bytesTotal = total
+                        STATE.speed = 0L
+                        return true
+                    }
+                    // 真的是范围错误，删掉重来
                     target.delete()
                     STATE.bytesDone = 0L
                     return false
