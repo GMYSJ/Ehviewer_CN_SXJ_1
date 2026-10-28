@@ -604,6 +604,18 @@ public final class GalleryListScene extends BaseScene
                 Log.e(TAG, "Failed to open site download", e);
             }
         }
+
+        /**
+         * 长按退回到浏览器搜索：想直接看网页版、或者站内解析失败时还能走老路。
+         */
+        @Override
+        public void onLongClick() {
+            Activity activity = getActivity2();
+            String url = KemonoHelper.buildSearchUrl(mSite.getBaseUrl(), mKeyword);
+            if (null != activity && null != url) {
+                UrlOpener.openUrl(activity, url, false);
+            }
+        }
     }
 
     /**
