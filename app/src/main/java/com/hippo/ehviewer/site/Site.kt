@@ -61,7 +61,7 @@ enum class Site(
             return try {
                 val request = Request.Builder()
                     .url(url)
-                    .header("User-Agent", KemonoHelper.BROWSER_UA)
+                    .header("User-Agent", KemonoHelper.USER_AGENT)
                     .header("Accept", "text/html,application/json;q=0.9,*/*;q=0.8")
                     .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8,ja;q=0.7")
                     .build()
@@ -74,7 +74,7 @@ enum class Site(
         fun newCall(url: String): Call {
             val request = Request.Builder()
                 .url(url)
-                .header("User-Agent", KemonoHelper.BROWSER_UA)
+                .header("User-Agent", KemonoHelper.USER_AGENT)
                 .build()
             return client.newCall(request)
         }
@@ -87,7 +87,7 @@ enum class Site(
         fun newResumableCall(url: String, startRange: Long): Call {
             val builder = Request.Builder()
                 .url(url)
-                .header("User-Agent", KemonoHelper.BROWSER_UA)
+                .header("User-Agent", KemonoHelper.USER_AGENT)
             if (startRange > 0) {
                 builder.header("Range", "bytes=$startRange-")
             }

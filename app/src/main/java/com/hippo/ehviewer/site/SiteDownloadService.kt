@@ -97,8 +97,11 @@ class SiteDownloadService : Service() {
         val dir = File(filesDir, "site/${site.name}/${post.id}")
         if (!dir.exists() && !dir.mkdirs()) return
 
+        // API 返回的 attachments 只有 path，拼出来的 {base}/data<path> 实测全部 404，
+        // 因此换成从帖子页 HTML 提取的 CDN 签名直链（拿不到时由 SiteApi 兜底回退）
+        val attachments = SiteApi.fetchDownloadAttachments(site, post)
         val downloaded = ArrayList<File>()
-        for (attachment in post.attachments) {
+        for (attachment in attachments) {
             if (STATE.cancelRequested) break
             val url = attachment.preferredUrl(site) ?: continue
             val target = File(dir, sanitize(attachment.name))
@@ -117,7 +120,13 @@ class SiteDownloadService : Service() {
 
         if (STATE.cancelRequested || downloaded.isEmpty()) return
 
-        val passwords = PasswordExtractor.extract(post.content, post.title)
+        // 密码三个来源：正文、标题，以及压缩包文件名本身。
+        // 后者非常常见，例如「清宵-被染的双修（解压密码Ryx8）.zip」，漏掉就完全解不开。
+        val passwords = PasswordExtractor.extract(
+            post.content,
+            post.title,
+            *downloaded.map { it.name }.toTypedArray(),
+        )
         val archives = downloaded.filter { it.extension.lowercase() in ARCHIVE_EXTENSIONS }
         var imageRoot: File = dir
         if (archives.isNotEmpty()) {
@@ -225,7 +234,15 @@ class SiteDownloadService : Service() {
         private const val NOTIFICATION_ID = 20261028
         private const val CHANNEL_ID = "site_download"
         private const val MAX_RETRY = 3
-        private const val REQUEST_INTERVAL_MS = 400L
+
+        /**
+         * 两次请求之间的最小间隔。
+         *
+         * <p>Pawchive 的 CDN 由 DDoS-Guard 保护，拦截页写明限制是
+         * “no more than 1 request per second, and 5 active downloads”，超限直接封。
+         * 这里取 1200ms 留足余量（实测 400ms 会被判定为滥用）。
+         */
+        private const val REQUEST_INTERVAL_MS = 1200L
         private const val RETRY_DELAY_MS = 1200L
         private const val BUFFER_SIZE = 32 * 1024
 

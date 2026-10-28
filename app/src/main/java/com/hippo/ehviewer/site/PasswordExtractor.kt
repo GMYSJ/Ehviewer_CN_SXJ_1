@@ -10,8 +10,16 @@ import java.util.Locale
  */
 object PasswordExtractor {
 
-    /** 密码本体：可打印 ASCII，长度 2~64，不能以标点结尾。 */
-    private const val VALUE = """([!-~]{2,64}?)[.,;:!?]?(?=\s|${'$'}|[<\u3002\uff0c])"""
+    /**
+     * 密码本体：可打印 ASCII，长度 2~64，不能以标点结尾。
+     *
+     * <p>末尾边界必须放得足够宽：很多作者把密码直接写进<b>附件文件名</b>里，
+     * 例如 {@code 清宵-被染的双修（解压密码Ryx8）.zip}——密码后面紧跟的是全角右括号，
+     * 只认空白/句号/逗号的话会整条漏掉（实测这种写法能占到一半以上）。
+     * 因此边界取「空白 / 结尾 / 任意非 ASCII 可打印字符（含全角括号）/ 压缩包扩展名」。
+     */
+    private const val VALUE =
+        """([!-~]{2,64}?)[.,;:!?]?(?=\s|${'$'}|[^!-~]|\.(?:zip|rar|7z|cbz|tar|gz)|[<\u3002\uff0c])"""
 
     private val PATTERNS: List<Regex> = listOf(
         // Password / Passcode / Pass phrase / Zip password / Archive password

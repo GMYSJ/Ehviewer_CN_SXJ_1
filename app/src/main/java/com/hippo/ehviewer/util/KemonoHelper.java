@@ -22,15 +22,25 @@ public final class KemonoHelper {
     /** Pawchive 主站。 */
     public static final String PAWCHIVE_BASE = "https://pawchive.pw";
 
-    /** 附件静态资源的挂载前缀。 */
+    /**
+     * 附件静态资源的挂载前缀。
+     *
+     * <p>实测：{@code {base}/data<path>} 一律返回 404，不能用来下载附件。
+     * 真实地址是帖子页 HTML 里的 CDN 签名直链，见 SiteApi 的直链提取。
+     */
     public static final String DATA_PATH = "/data";
 
     /**
-     * 站点对非浏览器 UA 较为敏感（Cloudflare），这里统一伪装成 Chrome。
+     * 统一使用的 User-Agent。
+     *
+     * <p><b>不要改成浏览器 UA。</b>Pawchive 的 CDN（t1.pawchive.pw）由 DDoS-Guard 保护，
+     * 其拦截页原文写着 “pretending to be a browser will result in a block”。
+     * 实测同一条签名直链：伪装 Chrome 返回 403，换成诚实可识别的 UA 返回 200。
+     * 对方同时要求 “identifiable user agent, preferably with a way to contact you”，
+     * 因此这里如实标识自身并附联系方式。
      */
-    public static final String BROWSER_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    + "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    public static final String USER_AGENT =
+            "EhViewer-SiteDownload/1.0 (Android; contact: github.com/GMYSJ/Ehviewer_CN_SXJ_1)";
 
     private static final String QUERY_KEYWORD = "q";
     private static final String PREFIX_ARTIST = "artist:";

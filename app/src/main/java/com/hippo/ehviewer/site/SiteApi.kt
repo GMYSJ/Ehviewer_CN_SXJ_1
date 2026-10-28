@@ -1,8 +1,10 @@
 package com.hippo.ehviewer.site
 
+import android.net.Uri
 import com.hippo.ehviewer.util.KemonoHelper
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLDecoder
 import java.util.regex.Pattern
 
 /** 搜索结果里出现的帖子链接，形如 {@code /patreon/user/30500811/post/173566354}。 */
@@ -135,6 +137,72 @@ object SiteApi {
             )
         }
         return result
+    }
+
+    /**
+     * 取一条帖子的可下载附件列表。
+     *
+     * <p><b>为什么不能直接用 API 返回的 attachments</b>：实测下来
+     * <ul>
+     *   <li>API 的 {@code attachments} 里只有 {@code name}/{@code path}/{@code node}，
+     *       <b>没有</b> temp_url；</li>
+     *   <li>按 Kemono 惯例拼的 {@code {base}/data<path>} 对 Pawchive 一律 404；</li>
+     *   <li>真正能下载的 CDN 签名直链（{@code t1.pawchive.pw/f/<hash>/<文件名>?e=&s=}）
+     *       <b>只出现在帖子页的 HTML 里</b>。</li>
+     * </ul>
+     * 所以这里先抓帖子页取直链；抓不到才退回 API 解析结果（此时多半下不动，但留个兜底）。
+     */
+    fun fetchDownloadAttachments(site: Site, post: Post): List<Attachment> {
+        val fromHtml = fetchDirectAttachments(site, post)
+        return fromHtml.ifEmpty { post.attachments }
+    }
+
+    /** 帖子详情页地址，形如 {@code {base}/patreon/user/<uid>/post/<pid>}。 */
+    private fun postPageUrl(site: Site, post: Post): String =
+        "${site.baseUrl}/${post.service}/user/${post.userId}/post/${post.id}"
+
+    private fun fetchDirectAttachments(site: Site, post: Post): List<Attachment> {
+        val response = Site.get(postPageUrl(site, post)) ?: return emptyList()
+        val html = try {
+            response.use { it.body?.string() }
+        } catch (e: Exception) {
+            null
+        }
+        if (html.isNullOrEmpty()) return emptyList()
+        return parseDirectLinks(html)
+    }
+
+    /** CDN 签名直链，例如 {@code https://t1.pawchive.pw/f/<hash>/<文件名>?e=...&s=...}。 */
+    private val DIRECT_LINK: Pattern =
+        Pattern.compile("https?://t\\d+\\.[a-z0-9.-]+/f/[^\"'<>\\s]+")
+
+    private fun parseDirectLinks(html: String): List<Attachment> {
+        // 页面里链接是 HTML 转义过的，&amp; 必须还原，否则签名参数会被截断
+        val text = html.replace("&amp;", "&")
+        val matcher = DIRECT_LINK.matcher(text)
+        val seen = LinkedHashSet<String>()
+        val result = ArrayList<Attachment>()
+        while (matcher.find()) {
+            val link = matcher.group()
+            if (!seen.add(link)) continue
+            result.add(Attachment(name = nameFromDirectLink(link), path = link, tempUrl = link))
+        }
+        return result
+    }
+
+    /** 直链里的文件名是 URL 编码过的中文，解码后作为附件名（密码也可能写在里面）。 */
+    private fun nameFromDirectLink(link: String): String {
+        val segment = try {
+            Uri.parse(link).lastPathSegment
+        } catch (e: Exception) {
+            null
+        }
+        if (segment.isNullOrEmpty()) return link
+        return try {
+            URLDecoder.decode(segment, "UTF-8")
+        } catch (e: Exception) {
+            segment
+        }
     }
 
     private fun parseAttachments(post: JSONObject): List<Attachment> {
