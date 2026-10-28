@@ -105,12 +105,16 @@ object SiteApi {
      *
      * <p>返回顺序与搜索页一致。返回的 [Post] 自带 service / userId，后续下载不需要再知道作者是谁。
      *
-     * @param onProgress 每解析出一条就回调一次 (已解析, 总数)，供界面显示进度
+     * @param onProgress 解析进度 (已解析, 总数)
+     * @param onPost     每解析出一条就立刻回调一次。<b>这是界面能“出一条显示一条”的关键</b>：
+     *                   整轮解析受站点 1 请求/秒的限流约束，可能要几十秒，全部收齐再显示
+     *                   会让用户以为卡死。
      */
     fun fetchPostsByKeyword(
         site: Site,
         keyword: String,
         onProgress: ((Int, Int) -> Unit)? = null,
+        onPost: ((Post) -> Unit)? = null,
     ): List<Post> {
         val normalized = KemonoHelper.normalize(keyword) ?: return emptyList()
         val html = fetchSearchHtml(site, normalized) ?: return emptyList()
@@ -119,6 +123,7 @@ object SiteApi {
 
         val total = hits.size
         val collected = HashMap<String, Post>()
+        onProgress?.invoke(0, total)
 
         // 按作者分组，只记需要的那几个 post id
         val hitsByCreator = LinkedHashMap<Creator, MutableSet<String>>()
@@ -135,7 +140,11 @@ object SiteApi {
                 if (posts.isEmpty()) break
                 for (post in posts) {
                     if (wanted.contains(post.id)) {
-                        collected[postKey(post.service, post.userId, post.id)] = post
+                        val key = postKey(post.service, post.userId, post.id)
+                        if (collected.put(key, post) == null) {
+                            onPost?.invoke(post)
+                            onProgress?.invoke(collected.size, total)
+                        }
                         missing.remove(post.id)
                     }
                 }
@@ -143,7 +152,6 @@ object SiteApi {
                 page++
                 sleepQuietly(POST_PAGE_INTERVAL_MS)
             }
-            onProgress?.invoke(collected.size, total)
             sleepQuietly(CREATOR_INTERVAL_MS)
         }
 
@@ -151,8 +159,11 @@ object SiteApi {
         for (hit in hits) {
             if (collected.containsKey(postKey(hit.service, hit.userId, hit.postId))) continue
             val post = fetchSinglePost(site, hit) ?: continue
-            collected[postKey(hit.service, hit.userId, hit.postId)] = post
-            onProgress?.invoke(collected.size, total)
+            val key = postKey(hit.service, hit.userId, hit.postId)
+            if (collected.put(key, post) == null) {
+                onPost?.invoke(post)
+                onProgress?.invoke(collected.size, total)
+            }
             sleepQuietly(SINGLE_POST_INTERVAL_MS)
         }
 

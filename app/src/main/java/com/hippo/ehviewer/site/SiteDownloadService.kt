@@ -11,6 +11,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.hippo.ehviewer.R
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -51,6 +52,10 @@ class SiteDownloadService : Service() {
         /** 当前文件的总字节数；0 表示服务端没给 Content-Length，只能转圈 */
         @Volatile
         var bytesTotal: Long = 0L
+
+        /** 当前下载速度（字节/秒），0 表示还没测出来 */
+        @Volatile
+        var speed: Long = 0L
 
         /** 服务真的跑起来了吗。界面靠它区分「还没开始」和「正在忙」。 */
         @Volatile
@@ -119,7 +124,9 @@ class SiteDownloadService : Service() {
             startForeground(NOTIFICATION_ID, buildNotification())
         } catch (e: Throwable) {
             Log.w(TAG, "startForeground 失败", e)
+            SiteLog.d(this, "startForeground 失败：${e.javaClass.simpleName}: ${e.message}")
         }
+        SiteLog.d(this, "服务启动 startId=$startId")
 
         // 重复 startService 会再次进到这里；已有线程在跑就别再起一个，
         // 否则两个线程会同时往同一个 STATE 里写，进度直接乱掉
@@ -131,7 +138,11 @@ class SiteDownloadService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        STATE.cancelRequested = true
+        // 这里绝对不能置 cancelRequested：系统回收/重建服务是常规操作，
+        // 之前这么写会让下载在用户毫不知情的情况下被当成“已取消”结束，
+        // 表现就是进度跑到一半连通知带面板一起消失。取消只由用户主动触发。
+        Log.i(TAG, "服务销毁，任务状态: done=" + STATE.done + " completed=" + STATE.completed + "/" + STATE.total)
+        SiteLog.d(this, "服务销毁：done=${STATE.done} ${STATE.completed}/${STATE.total}")
     }
 
     @Suppress("DEPRECATION")
@@ -142,6 +153,7 @@ class SiteDownloadService : Service() {
             // 后台线程里的未捕获 Throwable 会直接被系统当成崩溃，整个进程被杀。
             // 下载失败顶多是没有文件，绝不能连累 App 本身。
             Log.e(TAG, "下载任务异常终止", t)
+            SiteLog.d(this, "任务异常终止：${t.javaClass.name}: ${t.message}")
             STATE.lastError = t.message ?: t.javaClass.simpleName
         } finally {
             STATE.done = true
@@ -169,22 +181,37 @@ class SiteDownloadService : Service() {
         STATE.imported = 0
         STATE.failed = 0
         STATE.started = true
+        SiteLog.d(this, "任务开始：${tasks.size} 条帖子，${STATE.total} 个附件")
         publish(force = true)
 
         for (task in tasks) {
             if (STATE.cancelRequested) break
             STATE.currentName = task.post.title ?: task.post.id
+            SiteLog.d(this, "帖子开始：${task.site.name}/${task.post.id} 附件=${task.post.attachments.size} 标题=${task.post.title}")
             publish(force = true)
+            val completedBefore = STATE.completed
             try {
                 downloadPost(task)
             } catch (t: Throwable) {
                 // 单条帖子失败（含 OOM、解压库异常）只记一次失败，继续下一条
                 Log.e(TAG, "帖子下载失败: " + task.post.id, t)
+                SiteLog.d(this, "帖子异常：${task.post.id} ${t.javaClass.simpleName}: ${t.message}")
                 STATE.failed++
                 STATE.lastError = t.message ?: t.javaClass.simpleName
             }
+            // 中途抛异常 / 提前 return 时，这条帖子后面的附件不会再被处理。
+            // 不补齐的话 completed 永远差一截，进度条停在那儿然后突然“完成”。
+            val expected = completedBefore + task.post.attachments.size
+            if (STATE.completed < expected) {
+                STATE.completed = expected
+            }
+            if (STATE.completed > STATE.total) {
+                STATE.total = STATE.completed
+            }
+            SiteLog.d(this, "帖子结束：${task.post.id} 进度=${STATE.completed}/${STATE.total} 已导入=${STATE.imported} 失败=${STATE.failed}")
             publish(force = true)
         }
+        SiteLog.d(this, "任务结束：导入=${STATE.imported} 失败=${STATE.failed} 取消=${STATE.cancelRequested}")
     }
 
     private fun downloadPost(task: Task) {
@@ -195,35 +222,53 @@ class SiteDownloadService : Service() {
 
         // API 返回的 attachments 只有 path，拼出来的 {base}/data<path> 实测全部 404，
         // 因此换成从帖子页 HTML 提取的 CDN 签名直链（拿不到时由 SiteApi 兜底回退）
+        waitForPageSlot()
         val attachments = SiteApi.fetchDownloadAttachments(site, post)
         if (attachments.isEmpty()) {
+            SiteLog.d(this, "帖子没有可用附件：${post.id}")
             STATE.failed++
             STATE.lastError = getString(R.string.site_download_no_attachment)
             return
         }
+        SiteLog.d(this, "帖子 ${post.id} 可用附件 ${attachments.size} 个")
         val downloaded = ArrayList<File>()
         for (attachment in attachments) {
             if (STATE.cancelRequested) break
-            val url = attachment.preferredUrl(site) ?: continue
-            val target = File(dir, sanitize(attachment.name))
-            STATE.currentFile = target.name
-            STATE.bytesDone = 0L
-            STATE.bytesTotal = 0L
-            publish(force = true)
-            if (downloadFile(url, target)) {
-                downloaded.add(target)
+            val url = attachment.preferredUrl(site)
+            if (url == null) {
+                // 拿不到地址也算一个“已处理”的附件，否则进度永远补不齐
+                SiteLog.d(this, "附件无可用地址：${attachment.name}")
+                STATE.failed++
+            } else {
+                val target = File(dir, sanitize(attachment.name))
+                STATE.currentFile = target.name
+                STATE.bytesDone = 0L
+                STATE.bytesTotal = 0L
+                STATE.speed = 0L
+                publish(force = true)
+                val ok = downloadFile(url, target)
+                val size = if (target.exists()) target.length() else 0L
+                SiteLog.d(
+                    this,
+                    if (ok) "附件完成：${target.name} ${size}B"
+                    else "附件失败：${attachment.name} ${STATE.lastError}",
+                )
+                if (ok) {
+                    downloaded.add(target)
+                } else {
+                    STATE.failed++
+                }
+                STATE.currentFile = ""
+                STATE.bytesDone = 0L
+                STATE.bytesTotal = 0L
+                STATE.speed = 0L
             }
-            STATE.currentFile = ""
-            STATE.bytesDone = 0L
-            STATE.bytesTotal = 0L
             STATE.completed++
             publish(force = true)
-            // 站点有频率限制，稍微收着点，别把 IP 打进黑名单
-            try {
-                Thread.sleep(REQUEST_INTERVAL_MS)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
+            // 注意：这里以前每次都 sleep 1.2 秒，纯属白等。
+            // DDoS-Guard 的「1 请求/秒」限的是站点域名（页面/API），
+            // 附件走的是 t1.pawchive.pw 这个 CDN 直链，不受那条限流约束。
+            // 限流改由 waitForPageSlot() 在真正请求页面之前做。
         }
 
         if (STATE.cancelRequested || downloaded.isEmpty()) return
@@ -281,6 +326,25 @@ class SiteDownloadService : Service() {
         return false
     }
 
+    /**
+     * 站点页面/API 的限流闸门。
+     *
+     * <p>DDoS-Guard 拦的是站点域名（{@code pawchive.pw} 的页面和 /api 接口），
+     * 要求不超过 1 请求/秒；附件走 {@code t1.pawchive.pw} 这个 CDN 直链，不受这条限制。
+     * 所以只在真正要发页面请求之前等，下载过程一秒都不浪费。
+     */
+    private fun waitForPageSlot() {
+        val wait = PAGE_INTERVAL_MS - (System.currentTimeMillis() - lastPageRequestAt)
+        if (wait > 0) {
+            try {
+                Thread.sleep(wait)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        lastPageRequestAt = System.currentTimeMillis()
+    }
+
     private fun attemptDownload(url: String, target: File): Boolean {
         val existing = if (target.exists()) target.length() else 0L
         STATE.bytesDone = existing
@@ -303,16 +367,31 @@ class SiteDownloadService : Service() {
                 STATE.bytesTotal = if (length > 0) existing + length else 0L
                 publish(force = true)
                 val append = existing > 0 && response.code() == 206
-                FileOutputStream(target, append).use { out ->
+                // 不套缓冲的话每 64KB 就是一次系统调用，慢速存储上会明显拖后腿
+                BufferedOutputStream(FileOutputStream(target, append), BUFFER_SIZE * 8).use { out ->
                     body.byteStream().use { input ->
                         val buffer = ByteArray(BUFFER_SIZE)
+                        var windowStart = System.currentTimeMillis()
+                        var windowBytes = 0L
                         while (!STATE.cancelRequested) {
                             val read = input.read(buffer)
                             if (read == -1) break
                             out.write(buffer, 0, read)
                             STATE.bytesDone += read
-                            // 字节级进度要高频刷新，但 notify 不能跟着每个 buffer 走
-                            publish(force = false)
+                            windowBytes += read
+                            // 每半秒测一次速度，顺便节流刷新通知
+                            val now = System.currentTimeMillis()
+                            val elapsed = now - windowStart
+                            if (elapsed >= SPEED_WINDOW_MS) {
+                                STATE.speed = windowBytes * 1000 / elapsed
+                                windowStart = now
+                                windowBytes = 0L
+                                publish(force = false)
+                            }
+                        }
+                        if (windowBytes > 0) {
+                            val elapsed = (System.currentTimeMillis() - windowStart).coerceAtLeast(1)
+                            STATE.speed = windowBytes * 1000 / elapsed
                         }
                     }
                 }
@@ -360,7 +439,8 @@ class SiteDownloadService : Service() {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_download)
             .setOngoing(!state.done)
-            .setAutoCancel(state.done)
+            // 有失败时别让通知被划走/自动消失，用户得能回来看原因
+            .setAutoCancel(state.done && state.failed == 0)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -445,15 +525,23 @@ class SiteDownloadService : Service() {
         private const val REQUEST_CANCEL = 2
 
         /**
-         * 两次请求之间的最小间隔。
+         * 站点页面/API 的最小请求间隔。
          *
-         * <p>Pawchive 的 CDN 由 DDoS-Guard 保护，拦截页写明限制是
+         * <p>Pawchive 的页面和 API 由 DDoS-Guard 保护，拦截页写明限制是
          * “no more than 1 request per second, and 5 active downloads”，超限直接封。
-         * 这里取 1200ms 留足余量（实测 400ms 会被判定为滥用）。
+         * 这里取 1100ms 留足余量（实测 400ms 会被判定为滥用）。
+         * <b>只约束页面请求</b>，CDN 直链下载不受影响。
          */
-        private const val REQUEST_INTERVAL_MS = 1200L
+        private const val PAGE_INTERVAL_MS = 1100L
         private const val RETRY_DELAY_MS = 1200L
-        private const val BUFFER_SIZE = 32 * 1024
+        private const val BUFFER_SIZE = 64 * 1024
+
+        /** 速度采样窗口 */
+        private const val SPEED_WINDOW_MS = 500L
+
+        /** 上次发起页面请求的时间，用于 [waitForPageSlot] */
+        @Volatile
+        private var lastPageRequestAt = 0L
 
         /** 通知刷新间隔，太密会拖慢下载线程 */
         private const val NOTIFY_INTERVAL_MS = 400L
@@ -516,7 +604,16 @@ class SiteDownloadService : Service() {
          */
         fun describe(context: Context): String {
             val s = STATE
-            if (s.done) return doneText(context, s)
+            if (s.done) {
+                val text = doneText(context, s)
+                // 失败时把最后一次错误原因一起显示，否则用户只看到“完成：导入 0 项”，
+                // 完全不知道是网络拦了还是没找到附件
+                return if (s.failed > 0 && s.lastError.isNotEmpty()) {
+                    text + "\n" + s.lastError
+                } else {
+                    text
+                }
+            }
             val line = progressLine(context)
             return if (s.currentFile.isNotEmpty()) line + "\n" + s.currentFile else line
         }
@@ -547,6 +644,9 @@ class SiteDownloadService : Service() {
                     .append(formatSize(s.bytesDone))
                     .append(" / ")
                     .append(formatSize(s.bytesTotal))
+            }
+            if (s.speed > 0) {
+                sb.append("  ").append(formatSize(s.speed)).append("/s")
             }
             return sb.toString()
         }

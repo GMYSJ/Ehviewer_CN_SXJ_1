@@ -48,8 +48,11 @@ enum class Site(
         private val client: OkHttpClient by lazy {
             OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(30, TimeUnit.SECONDS)
-                .writeTimeout(30, TimeUnit.SECONDS)
+                // 读超时给足：CDN 偶尔会卡住十几秒才继续吐数据，
+                // 原来 30 秒会把它当成失败，触发整段重试，表现就是“下着下着不动了”
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
                 .followRedirects(true)
                 .build()
         }

@@ -17,12 +17,16 @@ import com.hippo.ehviewer.ui.ToolbarActivity
  * 列出某个创作者在 Kemono / Pawchive 上的帖子，勾选后批量下载。
  *
  * 下载过程由 [SiteDownloadService] 在后台完成，这里只负责展示题目和进度。
- * 从通知栏点进来时带 [EXTRA_RESUME]，此时不去联网重拉帖子，直接显示正在跑的进度。
+ * 从通知栏或「下载」页顶部那条进来时带 [EXTRA_RESUME]，此时不去联网重拉帖子，直接显示正在跑的进度。
  */
 class SiteDownloadActivity : ToolbarActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private val posts = ArrayList<Post>()
+
+    /** 去重用：同一个帖子在翻页和单帖补齐里可能被碰到两次 */
+    private val postKeys = HashSet<String>()
+    private lateinit var adapter: ArrayAdapter<String>
     private var pollCount = 0
     private var polling = false
 
@@ -57,7 +61,14 @@ class SiteDownloadActivity : ToolbarActivity() {
         downloadButton = findViewById(R.id.download)
         cancelButton = findViewById(R.id.cancel)
 
+        adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_list_item_multiple_choice,
+            ArrayList<String>(),
+        )
+        listView.adapter = adapter
         listView.choiceMode = ListView.CHOICE_MODE_MULTIPLE
+
         downloadButton.isEnabled = false
         downloadButton.setOnClickListener { startDownload() }
         cancelButton.setOnClickListener {
@@ -119,47 +130,60 @@ class SiteDownloadActivity : ToolbarActivity() {
             }
             handler.post {
                 posts.clear()
-                posts.addAll(fetched)
-                renderPosts()
+                postKeys.clear()
+                fetched.forEach { addPost(it) }
+                onListReady()
             }
         }.start()
     }
 
     /**
-     * 关键词模式：先在站点上搜这个词，拿到命中的作者，再拉他们的帖子。
+     * 关键词模式：边解析边显示。
      *
-     * <p>这样用的是用户自己输入的词，而不是详情页只能拿到的 artist / uploader 标签。
+     * <p>整轮解析要受站点 1 请求/秒的限流约束，几十秒很正常。如果等全部收齐再显示，
+     * 用户看到的是一直空着的列表，会以为卡死——所以解析出一条就立刻加进列表。
      */
     private fun loadByKeyword() {
         val query = keyword ?: return
         progressView.text = getString(R.string.site_download_searching, query)
         Thread {
-            val fetched = try {
-                SiteApi.fetchPostsByKeyword(site, query) { done, total ->
-                    handler.post {
-                        progressView.text = getString(R.string.site_download_parsing, done, total)
-                    }
-                }
+            try {
+                SiteApi.fetchPostsByKeyword(
+                    site,
+                    query,
+                    onProgress = { done, total ->
+                        handler.post {
+                            progressView.text =
+                                getString(R.string.site_download_parsing, done, total)
+                        }
+                    },
+                    onPost = { post ->
+                        handler.post {
+                            if (addPost(post)) {
+                                downloadButton.isEnabled = true
+                            }
+                        }
+                    },
+                )
             } catch (t: Throwable) {
-                emptyList()
+                // 网络异常不往外抛，界面统一按“拿到多少算多少”处理
             }
-            handler.post {
-                posts.clear()
-                posts.addAll(fetched)
-                renderPosts()
-            }
+            handler.post { onListReady() }
         }.start()
     }
 
-    private fun renderPosts() {
-        val titles: List<String> = posts.map { post ->
-            (post.title ?: post.id) + "  (" + post.attachments.size + ")"
-        }
-        listView.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_list_item_multiple_choice,
-            titles,
-        )
+    /**
+     * @return true 表示是新的帖子，已经加进列表
+     */
+    private fun addPost(post: Post): Boolean {
+        val key = post.service + "/" + post.userId + "/" + post.id
+        if (!postKeys.add(key)) return false
+        posts.add(post)
+        adapter.add((post.title ?: post.id) + "  (" + post.attachments.size + ")")
+        return true
+    }
+
+    private fun onListReady() {
         downloadButton.isEnabled = posts.isNotEmpty()
         progressView.text = if (posts.isEmpty()) {
             getString(R.string.site_download_empty)
