@@ -164,7 +164,8 @@ object SiteApi {
     private fun fetchDirectAttachments(site: Site, post: Post): List<Attachment> {
         val response = Site.get(postPageUrl(site, post)) ?: return emptyList()
         val html = try {
-            response.use { it.body?.string() }
+            // OkHttp 3.x 是 Java 实现，这里是方法调用 body()，不能当 Kotlin 属性写
+            response.use { it.body()?.string() }
         } catch (e: Exception) {
             null
         }
