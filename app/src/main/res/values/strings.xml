@@ -1118,6 +1118,7 @@
     <string name="site_download_loading">Loading posts…</string>
     <string name="site_download_choose">Select posts to download</string>
     <string name="site_download_searching">Searching “%1$s”…</string>
+    <string name="site_download_parsing">Resolving posts… %1$d / %2$d</string>
     <string name="site_download_found">%1$d post(s) found, select the ones to download</string>
     <string name="site_download_empty">No posts available (blocked by Cloudflare?)</string>
     <string name="site_download_no_selection">Nothing selected yet</string>

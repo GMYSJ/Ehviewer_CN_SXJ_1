@@ -89,7 +89,11 @@ class SiteDownloadActivity : ToolbarActivity() {
         progressView.text = getString(R.string.site_download_searching, query)
         Thread {
             val fetched = try {
-                SiteApi.fetchPostsByKeyword(site, query)
+                SiteApi.fetchPostsByKeyword(site, query) { done, total ->
+                    handler.post {
+                        progressView.text = getString(R.string.site_download_parsing, done, total)
+                    }
+                }
             } catch (t: Throwable) {
                 emptyList()
             }

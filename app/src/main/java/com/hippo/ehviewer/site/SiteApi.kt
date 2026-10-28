@@ -13,6 +13,13 @@ private val POST_LINK: Pattern = Pattern.compile("/([a-z0-9_]+)/user/(\\d+)/post
 /** Pawchive 搜索无结果时的占位文案。 */
 private const val EMPTY_MARKER = "Nobody here but us chickens!"
 
+/** 搜索结果里命中的一条帖子（来自搜索页 HTML，不含正文）。 */
+private data class SearchHit(
+    val service: String,
+    val userId: String,
+    val postId: String,
+)
+
 /** 某个站点上的创作者。 */
 data class Creator(
     val service: String,
@@ -85,64 +92,134 @@ object SiteApi {
     }
 
     /**
-     * 从搜索页里解析出全部命中的创作者（去重，保持页面顺序）。
+     * 按关键词拿到「搜索结果里那些帖子的完整信息」。
      *
-     * <p>这是「用我自己输入的关键词」这条路的基础：详情页只能拿到 artist 标签 / uploader，
-     * 而上传者往往是搬运号，跟真正作者对不上。
+     * <p>做法分三步：
+     * <ol>
+     *   <li>搜索页 HTML 里拿到命中的 {@code (service, user, post)} 三元组；</li>
+     *   <li>按作者翻页扫帖子列表（每页约 50 条），把命中项连同正文/附件一起捞出来。
+     *       <b>只取命中项</b>，不要整个作者都展开——实测搜 “Ryx” 会命中 9 位作者，
+     *       全展开会混进几千条无关内容；</li>
+     *   <li>翻页翻不到的（帖子太老）逐条用单帖接口补齐，保证不漏。</li>
+     * </ol>
+     *
+     * <p>返回顺序与搜索页一致。返回的 [Post] 自带 service / userId，后续下载不需要再知道作者是谁。
+     *
+     * @param onProgress 每解析出一条就回调一次 (已解析, 总数)，供界面显示进度
      */
-    fun searchCreators(site: Site, keyword: String): List<Creator> {
+    fun fetchPostsByKeyword(
+        site: Site,
+        keyword: String,
+        onProgress: ((Int, Int) -> Unit)? = null,
+    ): List<Post> {
         val normalized = KemonoHelper.normalize(keyword) ?: return emptyList()
-        val response = Site.get(site.searchUrl(normalized)) ?: return emptyList()
+        val html = fetchSearchHtml(site, normalized) ?: return emptyList()
+        val hits = parseHits(html)
+        if (hits.isEmpty()) return emptyList()
+
+        val total = hits.size
+        val collected = HashMap<String, Post>()
+
+        // 按作者分组，只记需要的那几个 post id
+        val hitsByCreator = LinkedHashMap<Creator, MutableSet<String>>()
+        for (hit in hits) {
+            hitsByCreator.getOrPut(Creator(hit.service, hit.userId)) { HashSet() }.add(hit.postId)
+        }
+
+        for ((creator, wanted) in hitsByCreator) {
+            val missing = HashSet(wanted)
+            var offset = 0
+            var page = 0
+            while (missing.isNotEmpty() && page < MAX_POST_PAGES) {
+                val posts = fetchPostsPage(site, creator, offset) ?: break
+                if (posts.isEmpty()) break
+                for (post in posts) {
+                    if (wanted.contains(post.id)) {
+                        collected[postKey(post.service, post.userId, post.id)] = post
+                        missing.remove(post.id)
+                    }
+                }
+                offset += posts.size
+                page++
+                sleepQuietly(POST_PAGE_INTERVAL_MS)
+            }
+            onProgress?.invoke(collected.size, total)
+            sleepQuietly(CREATOR_INTERVAL_MS)
+        }
+
+        // 翻页没覆盖到的，逐条补齐
+        for (hit in hits) {
+            if (collected.containsKey(postKey(hit.service, hit.userId, hit.postId))) continue
+            val post = fetchSinglePost(site, hit) ?: continue
+            collected[postKey(hit.service, hit.userId, hit.postId)] = post
+            onProgress?.invoke(collected.size, total)
+            sleepQuietly(SINGLE_POST_INTERVAL_MS)
+        }
+
+        // 按搜索页上的顺序输出，实在拿不到的跳过
+        val result = ArrayList<Post>(hits.size)
+        for (hit in hits) {
+            collected[postKey(hit.service, hit.userId, hit.postId)]?.let { result.add(it) }
+        }
+        return result
+    }
+
+    /** 单帖接口：{@code {base}/api/v1/{service}/user/{uid}/post/{pid}}，返回单个对象。 */
+    private fun fetchSinglePost(site: Site, hit: SearchHit): Post? {
+        val url = "${site.baseUrl}/api/v1/${hit.service}/user/${hit.userId}/post/${hit.postId}"
+        val response = Site.get(url) ?: return null
         return try {
             response.use {
-                if (!it.isSuccessful) return emptyList()
-                val html = it.body()?.string() ?: return emptyList()
-                parseCreators(html)
+                if (!it.isSuccessful) return null
+                val body = it.body()?.string() ?: return null
+                parsePost(JSONObject(body))
             }
         } catch (e: Exception) {
-            emptyList()
+            null
         }
     }
 
-    private fun parseCreators(html: String): List<Creator> {
+    /** 搜索页 → HTML，失败返回 null（含被拦、超时）。 */
+    private fun fetchSearchHtml(site: Site, keyword: String): String? {
+        val response = Site.get(site.searchUrl(keyword)) ?: return null
+        return try {
+            response.use {
+                if (!it.isSuccessful) return null
+                it.body()?.string()
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** 搜索页里命中的帖子三元组，按出现顺序去重。 */
+    private fun parseHits(html: String): List<SearchHit> {
         val matcher = POST_LINK.matcher(html)
-        val creators = LinkedHashSet<Creator>()
+        val hits = LinkedHashSet<SearchHit>()
         while (matcher.find()) {
-            creators.add(Creator(matcher.group(1), matcher.group(2)))
+            hits.add(SearchHit(matcher.group(1), matcher.group(2), matcher.group(3)))
         }
-        return creators.toList()
+        return hits.toList()
     }
 
-    /**
-     * 按关键词直接拿可下载的帖子：搜索页 → 命中的创作者 → 各自的帖子列表。
-     *
-     * <p>返回的 [Post] 自带 service / userId，所以后面的下载和导入不需要再知道创作者是谁。
-     */
-    fun fetchPostsByKeyword(site: Site, keyword: String): List<Post> {
-        val creators = searchCreators(site, keyword)
-        if (creators.isEmpty()) return emptyList()
-        val seen = HashSet<String>()
-        val result = ArrayList<Post>()
-        for (creator in creators) {
-            val posts = fetchPosts(site, creator) ?: continue
-            for (post in posts) {
-                val key = post.service + "/" + post.userId + "/" + post.id
-                if (seen.add(key)) {
-                    result.add(post)
-                }
-            }
-            // 站点有频率限制，多位作者之间稍微喘口气
-            try {
-                Thread.sleep(CREATOR_INTERVAL_MS)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
+    private fun postKey(service: String, userId: String, postId: String): String =
+        "$service/$userId/$postId"
+
+    private fun sleepQuietly(millis: Long) {
+        try {
+            Thread.sleep(millis)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
         }
-        // 新发布的排前面，勾选起来更顺手（published 是 ISO8601，字符串比较即可）
-        return result.sortedByDescending { it.published ?: "" }
     }
 
+    /** 每位作者最多翻这么多页（每页约 50 条），防止在超高产作者身上无限翻页。 */
+    private const val MAX_POST_PAGES = 4
+    private const val POST_PAGE_INTERVAL_MS = 200L
     private const val CREATOR_INTERVAL_MS = 300L
+
+    /** 单帖补齐请求之间的间隔，留足 DDoS-Guard 的余量。 */
+    private const val SINGLE_POST_INTERVAL_MS = 700L
 
     private fun parseSearchResult(site: Site, html: String): SearchResult {
         val matcher = POST_LINK.matcher(html)
@@ -164,8 +241,16 @@ object SiteApi {
     /**
      * 拉取某个创作者的全部帖子（含附件清单）。
      */
-    fun fetchPosts(site: Site, creator: Creator): List<Post>? {
-        val response = Site.get(site.postsApiUrl(creator.service, creator.userId)) ?: return null
+    fun fetchPosts(site: Site, creator: Creator): List<Post>? = fetchPostsPage(site, creator, 0)
+
+    /**
+     * 拉取一页帖子。接口默认每页 50 条，用 {@code ?o=<offset>} 往后翻，
+     * 翻过头会返回空数组（实测）。
+     */
+    private fun fetchPostsPage(site: Site, creator: Creator, offset: Int): List<Post>? {
+        val url = site.postsApiUrl(creator.service, creator.userId) +
+            if (offset > 0) "?o=$offset" else ""
+        val response = Site.get(url) ?: return null
         return try {
             response.use {
                 if (!it.isSuccessful) return null
@@ -182,21 +267,23 @@ object SiteApi {
         val result = ArrayList<Post>(array.length())
         for (i in 0 until array.length()) {
             val item: JSONObject = array.optJSONObject(i) ?: continue
-            val id = item.optString("id")
-            if (id.isNullOrEmpty()) continue
-            result.add(
-                Post(
-                    id = id,
-                    userId = item.optString("user"),
-                    service = item.optString("service"),
-                    title = item.optString("title").let { if (it.isNullOrEmpty()) null else it },
-                    content = item.optString("content").let { if (it.isNullOrEmpty()) null else it },
-                    published = item.optString("published").let { if (it.isNullOrEmpty()) null else it },
-                    attachments = parseAttachments(item),
-                )
-            )
+            parsePost(item)?.let { result.add(it) }
         }
         return result
+    }
+
+    private fun parsePost(item: JSONObject): Post? {
+        val id = item.optString("id")
+        if (id.isNullOrEmpty()) return null
+        return Post(
+            id = id,
+            userId = item.optString("user"),
+            service = item.optString("service"),
+            title = item.optString("title").let { if (it.isNullOrEmpty()) null else it },
+            content = item.optString("content").let { if (it.isNullOrEmpty()) null else it },
+            published = item.optString("published").let { if (it.isNullOrEmpty()) null else it },
+            attachments = parseAttachments(item),
+        )
     }
 
     /**
