@@ -16,10 +16,6 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.Locale
-import java.util.concurrent.Callable
-import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Kemono / Pawchive 资源下载：附件下载 -> 自动解压 -> 导入本地。
@@ -107,10 +103,6 @@ class SiteDownloadService : Service() {
 
     @Volatile
     private var lastNotifyAt: Long = 0L
-
-    /** 分段下载连续失败的次数，超过阈值就整个任务都不用再试 */
-    @Volatile
-    private var segmentFailures: Int = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent != null && ACTION_CANCEL == intent.action) {
@@ -319,204 +311,20 @@ class SiteDownloadService : Service() {
     }
 
     /**
-     * 下载一个文件。
+     * 下载一个文件：单连接、顺序、断点续传。
      *
-     * <p>顺序是：先试多连接分段（大文件），不行再退回单连接断点续传。
-     * 分段失败时速度最多回到原来的水平，不会更差。
+     * <p>这里刻意<b>不</b>做多连接分段。实测这条 CDN 会惩罚并发：
+     * 同一个文件单连接能跑 5 MB/s，切成两段并行反而掉到 0.2 MB/s，
+     * 第二条连接还会被直接掐断。所以并发越少越快，一条连接下到底。
      */
     private fun downloadFile(url: String, target: File): Boolean {
-        if (trySegmented(url, target)) return true
-        if (STATE.cancelRequested) return false
+        // 旧版本分段下载留下的残片跟单连接下载不通用，先清掉
+        cleanParts(target)
         for (attempt in 1..MAX_RETRY) {
             if (STATE.cancelRequested) return false
-            if (attemptDownload(url, target)) {
-                // 之前分段留下的 .part 文件没用了
-                cleanParts(target)
-                return true
-            }
-            try {
-                Thread.sleep(RETRY_DELAY_MS * attempt)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
-        }
-        return false
-    }
-
-    /** 一段分段下载：对应一个独立的 .part 文件。 */
-    private class Segment(val start: Long, val end: Long, val file: File)
-
-    /**
-     * 探测文件总大小，并确认服务端支持 Range。
-     *
-     * <p>用 {@code Range: bytes=0-0} 探一下：返回 206 说明支持分段，
-     * 同时 Content-Range 里带着总长度；返回 200 说明不支持，只能单连接下。
-     */
-    private fun probeTotalSize(url: String): Long? {
-        return try {
-            Site.newRangeCall(url, 0L, 0L).execute().use { response ->
-                if (response.code() != 206) return null
-                val range = response.header("Content-Range") ?: return null
-                // 形如 bytes 0-0/123456789
-                val total = range.substringAfterLast('/', "").trim().toLongOrNull() ?: return null
-                if (total > 0) total else null
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun trySegmented(url: String, target: File): Boolean {
-        if (STATE.cancelRequested) return false
-        // 连续几次分段都失败，说明这家的 CDN 不吃这套，本次任务别再浪费时间探测
-        if (segmentFailures >= MAX_SEGMENT_FAILURES) return false
-        val total = probeTotalSize(url) ?: return false
-        if (total < SEGMENT_THRESHOLD) return false
-        if (target.exists() && target.length() == total) {
-            // 上次其实已经下完了，只是没并进去
-            STATE.bytesTotal = total
-            STATE.bytesDone = total
-            STATE.speed = 0L
-            publish(force = true)
-            return true
-        }
-        return downloadSegments(url, target, total)
-    }
-
-    /**
-     * 把文件切成几段并发下载，最后合并。
-     *
-     * <p>这类 CDN 通常按单连接限速——实测用户开不开代理速度都一样，甚至开代理更慢，
-     * 说明瓶颈不在链路而在服务端对每条连接的配额。单连接下 250MB 的包只能跑出
-     * 单连接的速度，切成 2~4 段并行才能把可用带宽用起来。
-     *
-     * <p>每段写到独立的 {@code .partN} 文件，中断后重试可以按段续传。
-     */
-    private fun downloadSegments(url: String, target: File, total: Long): Boolean {
-        // 段数跟着文件大小走：太小分段没意义，太多又会撞上 CDN 的并发上限（5 个）
-        val count = when {
-            total >= 64L * 1024 * 1024 -> 4
-            total >= 16L * 1024 * 1024 -> 3
-            else -> 2
-        }
-        val segLength = (total + count - 1) / count
-        val segments = ArrayList<Segment>(count)
-        for (i in 0 until count) {
-            val start = i * segLength
-            if (start >= total) break
-            val end = minOf(start + segLength - 1, total - 1)
-            segments.add(Segment(start, end, File(target.parentFile, target.name + ".part" + i)))
-        }
-        if (segments.size <= 1) return false
-
-        // 之前的整文件（单连接下的半成品）和分段文件不通用，删掉免得算错大小
-        if (target.exists()) target.delete()
-
-        val done = AtomicLong(0L)
-        for (segment in segments) {
-            if (segment.file.exists()) done.addAndGet(segment.file.length())
-        }
-        STATE.bytesTotal = total
-        STATE.bytesDone = done.get()
-        STATE.speed = 0L
-        SiteLog.d(this, "分段下载：${target.name} 共 $total B，分 ${segments.size} 段")
-        publish(force = true)
-
-        // 段任务只累加字节，进度和速度由这个泵统一算，避免多线程抢着刷新通知
-        val stopped = AtomicBoolean(false)
-        val pump = Thread {
-            var lastBytes = done.get()
-            var lastAt = System.currentTimeMillis()
-            while (!stopped.get()) {
-                try {
-                    Thread.sleep(SPEED_WINDOW_MS)
-                } catch (e: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    break
-                }
-                val now = System.currentTimeMillis()
-                val current = done.get()
-                STATE.bytesDone = current
-                STATE.speed = (current - lastBytes) * 1000 / (now - lastAt).coerceAtLeast(1)
-                lastBytes = current
-                lastAt = now
-                publish(force = false)
-            }
-        }
-        pump.isDaemon = true
-        pump.start()
-
-        val pool = Executors.newFixedThreadPool(segments.size)
-        var ok = true
-        try {
-            // 显式写成 Callable，避免 submit(Runnable) / submit(Callable) 重载歧义
-            val futures = segments.map { segment ->
-                pool.submit(Callable { downloadSegment(url, segment, done) })
-            }
-            for (future in futures) {
-                if (!future.get()) ok = false
-            }
-        } catch (t: Throwable) {
-            Log.w(TAG, "分段下载异常", t)
-            ok = false
-        } finally {
-            stopped.set(true)
-            pool.shutdownNow()
-            pump.interrupt()
-        }
-
-        if (!ok || STATE.cancelRequested) {
-            // 保留 .part：下次重试按段续传，不用从头再来
-            if (!STATE.cancelRequested) {
-                segmentFailures++
-            }
-            SiteLog.d(this, "分段未完成，保留分段文件（cancel=${STATE.cancelRequested}）")
-            return false
-        }
-
-        return try {
-            BufferedOutputStream(FileOutputStream(target), BUFFER_SIZE * 8).use { out ->
-                for (segment in segments) {
-                    segment.file.inputStream().use { input ->
-                        val buffer = ByteArray(BUFFER_SIZE)
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read == -1) break
-                            out.write(buffer, 0, read)
-                        }
-                    }
-                }
-            }
-            segments.forEach { it.file.delete() }
-            val size = target.length()
-            // 泵已经停了，最后这几十毫秒的进度得手动补上，否则进度条差最后一格
-            STATE.bytesDone = size
-            STATE.bytesTotal = total
-            STATE.speed = 0L
-            SiteLog.d(this, "分段合并完成：${target.name} ${size}B / $total B")
-            size == total
-        } catch (t: Throwable) {
-            Log.w(TAG, "合并分段文件失败", t)
-            SiteLog.d(this, "合并分段失败：${t.javaClass.simpleName}: ${t.message}")
-            false
-        }
-    }
-
-    /**
-     * 一段的下载，段内自己重试。
-     *
-     * <p>这条 CDN 的单连接很不稳定：实测经常正常返回 206 之后读着读着就断（几十秒不动）。
-     * 如果一段卡死就让整个文件失败，那分段反而比单连接更糟。
-     * 这里每段自己重试，且每次都从 .part 现有长度续传，前面下到的不会白费。
-     */
-    private fun downloadSegment(url: String, segment: Segment, done: AtomicLong): Boolean {
-        var attempt = 0
-        while (attempt < SEGMENT_RETRY) {
-            attempt++
+            if (attemptDownload(url, target)) return true
             if (STATE.cancelRequested) return false
-            if (downloadSegmentOnce(url, segment, done)) return true
-            if (STATE.cancelRequested) return false
-            SiteLog.d(this, "分片段失败，第 $attempt 次重试：${segment.file.name}")
+            SiteLog.d(this, "下载失败，第 $attempt 次重试：${target.name}")
             try {
                 Thread.sleep(RETRY_DELAY_MS * attempt)
             } catch (e: InterruptedException) {
@@ -527,38 +335,7 @@ class SiteDownloadService : Service() {
         return false
     }
 
-    private fun downloadSegmentOnce(url: String, segment: Segment, done: AtomicLong): Boolean {
-        val existing = if (segment.file.exists()) segment.file.length() else 0L
-        val from = segment.start + existing
-        if (from > segment.end) return true
-        return try {
-            Site.newRangeCall(url, from, segment.end).execute().use { response ->
-                // 服务端不认 Range（回了 200 全量）就不能分段，交回单连接逻辑
-                if (response.code() != 206) {
-                    SiteLog.d(this, "分段请求被拒：HTTP ${response.code()}，回退单连接")
-                    return false
-                }
-                val body = response.body() ?: return false
-                BufferedOutputStream(FileOutputStream(segment.file, existing > 0), BUFFER_SIZE * 8).use { out ->
-                    body.byteStream().use { input ->
-                        val buffer = ByteArray(BUFFER_SIZE)
-                        while (!STATE.cancelRequested) {
-                            val read = input.read(buffer)
-                            if (read == -1) break
-                            out.write(buffer, 0, read)
-                            done.addAndGet(read.toLong())
-                        }
-                    }
-                }
-                !STATE.cancelRequested && segment.file.length() == segment.end - segment.start + 1
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "分段下载失败", e)
-            false
-        }
-    }
-
-    /** 分段成功后清理残留的 .part 文件。 */
+    /** 清掉旧版本分段下载留下的 .part 残片。 */
     private fun cleanParts(target: File) {
         try {
             target.parentFile?.listFiles()?.forEach { file ->
@@ -781,15 +558,6 @@ class SiteDownloadService : Service() {
 
         /** 速度采样窗口 */
         private const val SPEED_WINDOW_MS = 500L
-
-        /** 小于这个大小就不分段：握手开销比省下的时间还多 */
-        private const val SEGMENT_THRESHOLD = 4L * 1024 * 1024
-
-        /** 分段连续失败这么多次，本次任务就不再尝试分段 */
-        private const val MAX_SEGMENT_FAILURES = 2
-
-        /** 单个分段自己的重试次数（段内断点续传，不会白下） */
-        private const val SEGMENT_RETRY = 3
 
         /** 上次发起页面请求的时间，用于 [waitForPageSlot] */
         @Volatile
