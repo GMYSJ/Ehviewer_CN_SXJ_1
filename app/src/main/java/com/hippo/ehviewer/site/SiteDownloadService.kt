@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.hippo.ehviewer.R
 import okhttp3.Request
@@ -55,8 +56,14 @@ class SiteDownloadService : Service() {
             cancel()
             return START_NOT_STICKY
         }
-        ensureChannel()
-        startForeground(NOTIFICATION_ID, buildNotification(0, 0, ""))
+        // Android 12+ 对后台启动前台服务有限制，个别机型/时机下会抛异常。
+        // 通知栏只是锦上添花，不能因为挂不上通知就把整个 App 带崩。
+        try {
+            ensureChannel()
+            startForeground(NOTIFICATION_ID, buildNotification(0, 0, ""))
+        } catch (e: Throwable) {
+            Log.w(TAG, "startForeground 失败", e)
+        }
         Thread { runDownload() }.start()
         return START_STICKY
     }
@@ -67,6 +74,26 @@ class SiteDownloadService : Service() {
     }
 
     private fun runDownload() {
+        try {
+            runDownloadInner()
+        } catch (t: Throwable) {
+            // 后台线程里的未捕获 Throwable 会直接被系统当成崩溃，整个进程被杀。
+            // 下载失败顶多是没有文件，绝不能连累 App 本身。
+            Log.e(TAG, "下载任务异常终止", t)
+        } finally {
+            STATE.done = true
+            STATE.currentName = ""
+            try {
+                publish(STATE.completed)
+                stopForeground(true)
+            } catch (t: Throwable) {
+                Log.w(TAG, "收尾失败", t)
+            }
+            stopSelf()
+        }
+    }
+
+    private fun runDownloadInner() {
         val tasks = pendingTasks.toList()
         STATE.total = tasks.sumOf { it.post.attachments.size }
         STATE.completed = 0
@@ -79,16 +106,12 @@ class SiteDownloadService : Service() {
             publish(STATE.completed)
             try {
                 downloadPost(task)
-            } catch (e: Exception) {
+            } catch (t: Throwable) {
+                // 单条帖子失败（含 OOM、解压库异常）只记一次失败，继续下一条
+                Log.e(TAG, "帖子下载失败: " + task.post.id, t)
                 STATE.failed++
             }
         }
-
-        STATE.done = true
-        STATE.currentName = ""
-        publish(STATE.completed)
-        stopForeground(true)
-        stopSelf()
     }
 
     private fun downloadPost(task: Task) {
@@ -230,6 +253,7 @@ class SiteDownloadService : Service() {
     private class Task(val site: Site, val post: Post)
 
     companion object {
+        private const val TAG = "SiteDownloadService"
         private const val ACTION_CANCEL = "cancel"
         private const val NOTIFICATION_ID = 20261028
         private const val CHANNEL_ID = "site_download"
@@ -260,10 +284,15 @@ class SiteDownloadService : Service() {
                 posts.forEach { pendingTasks.add(Task(site, it)) }
             }
             val intent = Intent(context, SiteDownloadService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (t: Throwable) {
+                // 系统拒绝启动（后台限制 / 服务数超限）时，让用户看到失败而不是闪退
+                Log.e(TAG, "启动下载服务失败", t)
             }
         }
 

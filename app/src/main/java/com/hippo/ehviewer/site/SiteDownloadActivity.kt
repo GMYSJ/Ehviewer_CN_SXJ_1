@@ -22,6 +22,7 @@ class SiteDownloadActivity : ToolbarActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private val posts = ArrayList<Post>()
+    private var pollCount = 0
 
     private lateinit var site: Site
     private lateinit var creator: Creator
@@ -34,7 +35,8 @@ class SiteDownloadActivity : ToolbarActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_site_download)
 
-        site = Site.valueOf(intent.getStringExtra(EXTRA_SITE) ?: Site.PAWCHIVE.name)
+        val siteName = intent.getStringExtra(EXTRA_SITE)
+        site = Site.values().firstOrNull { it.name == siteName } ?: Site.PAWCHIVE
         creator = Creator(
             intent.getStringExtra(EXTRA_SERVICE) ?: "",
             intent.getStringExtra(EXTRA_USER) ?: "",
@@ -99,6 +101,7 @@ class SiteDownloadActivity : ToolbarActivity() {
             return
         }
         downloadButton.isEnabled = false
+        pollCount = 0
         SiteDownloadService.start(this, site, creator, selected)
         pollProgress()
     }
@@ -119,6 +122,10 @@ class SiteDownloadActivity : ToolbarActivity() {
                     Toast.LENGTH_SHORT,
                 ).show()
                 downloadButton.isEnabled = true
+            } else if (state.completed == 0 && ++pollCount > POLL_TIMEOUT_COUNT) {
+                // 服务没能跑起来（被系统拒绝启动等），别让界面一直卡在“下载中”
+                Toast.makeText(this, R.string.site_download_empty, Toast.LENGTH_SHORT).show()
+                downloadButton.isEnabled = true
             } else {
                 pollProgress()
             }
@@ -135,6 +142,9 @@ class SiteDownloadActivity : ToolbarActivity() {
         private const val EXTRA_SERVICE = "service"
         private const val EXTRA_USER = "user"
         private const val POLL_INTERVAL_MS = 500L
+
+        /** 30 秒内一点进展都没有，认为下载没跑起来 */
+        private const val POLL_TIMEOUT_COUNT = 60
 
         fun newIntent(context: Context, site: Site, creator: Creator): Intent {
             val intent = Intent(context, SiteDownloadActivity::class.java)
