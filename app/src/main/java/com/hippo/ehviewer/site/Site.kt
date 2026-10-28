@@ -96,5 +96,24 @@ enum class Site(
             }
             return client.newCall(builder.build())
         }
+
+        /**
+         * 指定区间的下载请求，用于大文件分段并发。
+         *
+         * <p>为什么要分段：这类 CDN 通常按<b>单连接</b>限速（实测开不开代理速度差不多，
+         * 说明瓶颈不在链路而在服务端对每条连接的配额）。一个 250MB 的包用一条连接
+         * 只能跑出单连接的速度，切成几段并行才能把带宽用起来。
+         *
+         * @param start 起始字节（含）
+         * @param end   结束字节（含）
+         */
+        fun newRangeCall(url: String, start: Long, end: Long): Call {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", KemonoHelper.USER_AGENT)
+                .header("Range", "bytes=$start-$end")
+                .build()
+            return client.newCall(request)
+        }
     }
 }
