@@ -502,7 +502,32 @@ class SiteDownloadService : Service() {
         }
     }
 
+    /**
+     * 一段的下载，段内自己重试。
+     *
+     * <p>这条 CDN 的单连接很不稳定：实测经常正常返回 206 之后读着读着就断（几十秒不动）。
+     * 如果一段卡死就让整个文件失败，那分段反而比单连接更糟。
+     * 这里每段自己重试，且每次都从 .part 现有长度续传，前面下到的不会白费。
+     */
     private fun downloadSegment(url: String, segment: Segment, done: AtomicLong): Boolean {
+        var attempt = 0
+        while (attempt < SEGMENT_RETRY) {
+            attempt++
+            if (STATE.cancelRequested) return false
+            if (downloadSegmentOnce(url, segment, done)) return true
+            if (STATE.cancelRequested) return false
+            SiteLog.d(this, "分片段失败，第 $attempt 次重试：${segment.file.name}")
+            try {
+                Thread.sleep(RETRY_DELAY_MS * attempt)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+        }
+        return false
+    }
+
+    private fun downloadSegmentOnce(url: String, segment: Segment, done: AtomicLong): Boolean {
         val existing = if (segment.file.exists()) segment.file.length() else 0L
         val from = segment.start + existing
         if (from > segment.end) return true
@@ -762,6 +787,9 @@ class SiteDownloadService : Service() {
 
         /** 分段连续失败这么多次，本次任务就不再尝试分段 */
         private const val MAX_SEGMENT_FAILURES = 2
+
+        /** 单个分段自己的重试次数（段内断点续传，不会白下） */
+        private const val SEGMENT_RETRY = 3
 
         /** 上次发起页面请求的时间，用于 [waitForPageSlot] */
         @Volatile
