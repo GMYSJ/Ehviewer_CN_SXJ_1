@@ -26,6 +26,9 @@ class SiteDownloadActivity : ToolbarActivity() {
 
     private lateinit var site: Site
     private lateinit var creator: Creator
+
+    /** 非空表示这次是从「我输入的关键词」进来的，而不是从详情页的 artist 标签 */
+    private var keyword: String? = null
     private lateinit var listView: ListView
     private lateinit var progressView: TextView
     private lateinit var downloadButton: View
@@ -41,13 +44,14 @@ class SiteDownloadActivity : ToolbarActivity() {
             intent.getStringExtra(EXTRA_SERVICE) ?: "",
             intent.getStringExtra(EXTRA_USER) ?: "",
         )
+        keyword = intent.getStringExtra(EXTRA_KEYWORD)?.takeIf { it.isNotEmpty() }
 
         listView = findViewById(R.id.post_list)
         progressView = findViewById(R.id.progress)
         downloadButton = findViewById(R.id.download)
         cancelButton = findViewById(R.id.cancel)
 
-        setTitle(site.label + " - " + creator.userId)
+        setTitle(site.label + " - " + (keyword ?: creator.userId))
         listView.choiceMode = ListView.CHOICE_MODE_MULTIPLE
         downloadButton.isEnabled = false
         downloadButton.setOnClickListener { startDownload() }
@@ -56,13 +60,39 @@ class SiteDownloadActivity : ToolbarActivity() {
             finish()
         }
 
-        loadPosts()
+        if (keyword != null) {
+            loadByKeyword()
+        } else {
+            loadPosts()
+        }
     }
 
     private fun loadPosts() {
         progressView.setText(R.string.site_download_loading)
         Thread {
             val fetched = SiteApi.fetchPosts(site, creator) ?: emptyList()
+            handler.post {
+                posts.clear()
+                posts.addAll(fetched)
+                renderPosts()
+            }
+        }.start()
+    }
+
+    /**
+     * 关键词模式：先在站点上搜这个词，拿到命中的作者，再拉他们的帖子。
+     *
+     * <p>这样用的是用户自己输入的词，而不是详情页只能拿到的 artist / uploader 标签。
+     */
+    private fun loadByKeyword() {
+        val query = keyword ?: return
+        progressView.text = getString(R.string.site_download_searching, query)
+        Thread {
+            val fetched = try {
+                SiteApi.fetchPostsByKeyword(site, query)
+            } catch (t: Throwable) {
+                emptyList()
+            }
             handler.post {
                 posts.clear()
                 posts.addAll(fetched)
@@ -84,7 +114,7 @@ class SiteDownloadActivity : ToolbarActivity() {
         progressView.text = if (posts.isEmpty()) {
             getString(R.string.site_download_empty)
         } else {
-            getString(R.string.site_download_choose)
+            getString(R.string.site_download_found, posts.size)
         }
     }
 
@@ -141,6 +171,7 @@ class SiteDownloadActivity : ToolbarActivity() {
         private const val EXTRA_SITE = "site"
         private const val EXTRA_SERVICE = "service"
         private const val EXTRA_USER = "user"
+        private const val EXTRA_KEYWORD = "keyword"
         private const val POLL_INTERVAL_MS = 500L
 
         /** 30 秒内一点进展都没有，认为下载没跑起来 */
@@ -151,6 +182,16 @@ class SiteDownloadActivity : ToolbarActivity() {
             intent.putExtra(EXTRA_SITE, site.name)
             intent.putExtra(EXTRA_SERVICE, creator.service)
             intent.putExtra(EXTRA_USER, creator.userId)
+            return intent
+        }
+
+        /**
+         * 用用户自己输入的关键词进站内下载（不是 artist / uploader 标签）。
+         */
+        fun newIntentForKeyword(context: Context, site: Site, keyword: String): Intent {
+            val intent = Intent(context, SiteDownloadActivity::class.java)
+            intent.putExtra(EXTRA_SITE, site.name)
+            intent.putExtra(EXTRA_KEYWORD, keyword)
             return intent
         }
     }

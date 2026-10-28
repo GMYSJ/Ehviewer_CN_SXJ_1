@@ -109,6 +109,7 @@ import com.hippo.ehviewer.util.TagTranslationUtil;
 import com.hippo.ehviewer.util.ClipboardUtil;
 import com.hippo.ehviewer.util.KemonoHelper;
 import com.hippo.ehviewer.site.Site;
+import com.hippo.ehviewer.site.SiteDownloadActivity;
 import com.hippo.ehviewer.widget.GalleryInfoContentHelper;
 import com.hippo.ehviewer.widget.JumpDateSelector;
 import com.hippo.ehviewer.widget.SearchBar;
@@ -493,12 +494,15 @@ public final class GalleryListScene extends BaseScene
             if (result2 != null) {
                 return Collections.singletonList(new GalleryPageUrlSuggestion(result2.gid, result2.pToken, result2.page));
             }
-            // 拿当前正在输入的关键词，直接给出两个站的跳转入口
+            // 拿当前正在输入的关键词，直接给出站外入口
             String keyword = KemonoHelper.normalize(text);
             if (keyword != null && keyword.length() >= 2) {
-                List<SearchBar.Suggestion> list = new ArrayList<>(2);
+                List<SearchBar.Suggestion> list = new ArrayList<>(3);
                 list.add(new SiteSuggestion(Site.KEMONO, keyword));
                 list.add(new SiteSuggestion(Site.PAWCHIVE, keyword));
+                // 站内下载只给 Pawchive：Kemono 是单页应用，服务端不渲染搜索结果，
+                // 拿不到命中的作者，给了入口也只会显示“没找到”。
+                list.add(new SiteDownloadSuggestion(Site.PAWCHIVE, keyword));
                 return list;
             }
             return null;
@@ -553,6 +557,51 @@ public final class GalleryListScene extends BaseScene
             if (null != context && null != url) {
                 ClipboardUtil.copyText(url);
                 Toast.makeText(context, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    /**
+     * 用「我输入的搜索关键词」直接走站内下载。
+     *
+     * <p>和上面那个跳浏览器的候选不同：这里不打开网页，而是进到软件内的帖子列表，
+     * 勾选后原地下载 / 解压 / 导入。关键词就是用户此刻敲的词，而不是详情页里
+     * 只能拿到的 artist 标签或 uploader。
+     */
+    private class SiteDownloadSuggestion extends SearchBar.Suggestion {
+
+        private final Site mSite;
+        private final String mKeyword;
+
+        SiteDownloadSuggestion(Site site, String keyword) {
+            mSite = site;
+            mKeyword = keyword;
+        }
+
+        @Override
+        public CharSequence getText(float textSize) {
+            Resources resources = getResources2();
+            if (null != resources) {
+                return resources.getString(R.string.site_download_with_keyword, mSite.getLabel(), mKeyword);
+            }
+            return mSite.getLabel() + " - " + mKeyword;
+        }
+
+        @Override
+        public CharSequence getText(TextView textView) {
+            return getText(0f);
+        }
+
+        @Override
+        public void onClick() {
+            Activity activity = getActivity2();
+            if (null == activity) {
+                return;
+            }
+            try {
+                activity.startActivity(SiteDownloadActivity.Companion.newIntentForKeyword(activity, mSite, mKeyword));
+            } catch (Throwable e) {
+                Log.e(TAG, "Failed to open site download", e);
             }
         }
     }

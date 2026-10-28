@@ -1110,12 +1110,15 @@
     <string name="site_not_found">%1$s: nothing found</string>
     <string name="site_unknown">%1$s: unavailable (Cloudflare?)</string>
     <string name="site_search_with_keyword">Search “%2$s” on %1$s</string>
+    <string name="site_download_with_keyword">Download “%2$s” from %1$s</string>
 
     <!-- Kemono / Pawchive 下载 -->
     <string name="site_download_action">Download this creator</string>
     <string name="site_download_start">Download selected</string>
     <string name="site_download_loading">Loading posts…</string>
     <string name="site_download_choose">Select posts to download</string>
+    <string name="site_download_searching">Searching “%1$s”…</string>
+    <string name="site_download_found">%1$d post(s) found, select the ones to download</string>
     <string name="site_download_empty">No posts available (blocked by Cloudflare?)</string>
     <string name="site_download_no_selection">Nothing selected yet</string>
     <string name="site_download_progress">%1$d / %2$d files, %3$d imported</string>

@@ -84,6 +84,66 @@ object SiteApi {
         }
     }
 
+    /**
+     * 从搜索页里解析出全部命中的创作者（去重，保持页面顺序）。
+     *
+     * <p>这是「用我自己输入的关键词」这条路的基础：详情页只能拿到 artist 标签 / uploader，
+     * 而上传者往往是搬运号，跟真正作者对不上。
+     */
+    fun searchCreators(site: Site, keyword: String): List<Creator> {
+        val normalized = KemonoHelper.normalize(keyword) ?: return emptyList()
+        val response = Site.get(site.searchUrl(normalized)) ?: return emptyList()
+        return try {
+            response.use {
+                if (!it.isSuccessful) return emptyList()
+                val html = it.body()?.string() ?: return emptyList()
+                parseCreators(html)
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun parseCreators(html: String): List<Creator> {
+        val matcher = POST_LINK.matcher(html)
+        val creators = LinkedHashSet<Creator>()
+        while (matcher.find()) {
+            creators.add(Creator(matcher.group(1), matcher.group(2)))
+        }
+        return creators.toList()
+    }
+
+    /**
+     * 按关键词直接拿可下载的帖子：搜索页 → 命中的创作者 → 各自的帖子列表。
+     *
+     * <p>返回的 [Post] 自带 service / userId，所以后面的下载和导入不需要再知道创作者是谁。
+     */
+    fun fetchPostsByKeyword(site: Site, keyword: String): List<Post> {
+        val creators = searchCreators(site, keyword)
+        if (creators.isEmpty()) return emptyList()
+        val seen = HashSet<String>()
+        val result = ArrayList<Post>()
+        for (creator in creators) {
+            val posts = fetchPosts(site, creator) ?: continue
+            for (post in posts) {
+                val key = post.service + "/" + post.userId + "/" + post.id
+                if (seen.add(key)) {
+                    result.add(post)
+                }
+            }
+            // 站点有频率限制，多位作者之间稍微喘口气
+            try {
+                Thread.sleep(CREATOR_INTERVAL_MS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        // 新发布的排前面，勾选起来更顺手（published 是 ISO8601，字符串比较即可）
+        return result.sortedByDescending { it.published ?: "" }
+    }
+
+    private const val CREATOR_INTERVAL_MS = 300L
+
     private fun parseSearchResult(site: Site, html: String): SearchResult {
         val matcher = POST_LINK.matcher(html)
         val creators = LinkedHashSet<Creator>()
