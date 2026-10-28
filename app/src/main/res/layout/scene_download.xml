@@ -28,9 +28,60 @@
         android:visibility="gone"
         android:padding="4dp" />
 
+    <!--
+      站外（Kemono / Pawchive）下载不走 DownloadInfo 体系，因为那套是围绕画廊页码建的，
+      塞不进任意 URL 列表。这里在下载页顶部单独开一条，让用户在同一个地方就能看到它的进度。
+      由 SiteDownloadPanel 控制显示与刷新，没有任务时保持 GONE。
+    -->
+    <LinearLayout
+        android:id="@+id/site_download_panel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:orientation="vertical"
+        android:paddingStart="16dp"
+        android:paddingTop="10dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="10dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/site_download_panel_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/site_download_title"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/site_download_panel_progress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="12sp" />
+
+        <ProgressBar
+            android:id="@+id/site_download_panel_bar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:max="1000" />
+
+    </LinearLayout>
+
     <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent">
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
 
         <com.hippo.widget.ProgressView
             android:id="@+id/download_progress_view"

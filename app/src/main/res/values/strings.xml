@@ -1125,7 +1125,18 @@
     <string name="site_download_progress">%1$d / %2$d files, %3$d imported</string>
     <string name="site_download_done">Done: %1$d imported</string>
     <string name="site_download_title">Downloading from Kemono / Pawchive</string>
+    <string name="site_download_title_done">Download finished</string>
     <string name="site_download_channel">Site download</string>
+    <string name="site_download_resume_title">Download in progress</string>
+    <string name="site_download_preparing">Preparing…</string>
+    <string name="site_download_notif_progress">%1$d / %2$d · %3$d%%</string>
+    <string name="site_download_cancel_action">Cancel</string>
+    <string name="site_download_busy">A download is already running</string>
+    <string name="site_download_not_started">Download did not start (blocked by the system?)</string>
+    <string name="site_download_completed">%1$d imported</string>
+    <string name="site_download_failed">%1$d failed</string>
+    <string name="site_download_done_with_failed">Done: %1$d imported, %2$d failed</string>
+    <string name="site_download_no_attachment">No downloadable attachment found in this post</string>
     <string name="settings_site_download_title">Kemono / Pawchive download (experimental)</string>
     <string name="settings_site_download_summary">Allow downloading and importing creator posts inside the app</string>
 </resources>

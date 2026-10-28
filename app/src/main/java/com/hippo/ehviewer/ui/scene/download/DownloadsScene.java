@@ -72,6 +72,7 @@ import com.hippo.ehviewer.dao.DownloadInfo;
 import com.hippo.ehviewer.download.DownloadManager;
 import com.hippo.ehviewer.download.DownloadService;
 import com.hippo.ehviewer.event.SomethingNeedRefresh;
+import com.hippo.ehviewer.site.SiteDownloadPanel;
 import com.hippo.ehviewer.spider.SpiderInfo;
 import com.hippo.ehviewer.ui.GalleryActivity;
 import com.hippo.ehviewer.ui.MainActivity;
@@ -358,6 +359,9 @@ public class DownloadsScene extends ToolbarScene
 
         setupCategorySpinner(view, context);
 
+        // 站外（Kemono / Pawchive）下载的进度条挂在下载页顶部，跟普通下载在同一屏可见
+        SiteDownloadPanel.bind(view);
+
         mProgressView = (ProgressView) ViewUtils.$$(view, R.id.download_progress_view);
         View content = ViewUtils.$$(view, R.id.content);
         mRecyclerView = (MyEasyRecyclerView) ViewUtils.$$(content, R.id.recycler_view);
@@ -576,6 +580,8 @@ public class DownloadsScene extends ToolbarScene
     @Override
     public void onDestroyView() {
         super.onDestroyView();
+
+        SiteDownloadPanel.stop();
 
         mGuideHelper.destroy();
         if (null != mRecyclerView) {
